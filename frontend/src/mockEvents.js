@@ -15,4 +15,4 @@ export const mockEvents = [
         description: "Multiple 404 errors on sensitive paths",
         severity: "Medium"
     }
-];s
+];
