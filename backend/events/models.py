@@ -1,0 +1,14 @@
+from django.db import models
+
+
+class SecurityEvent(models.Model):
+    source_type = models.CharField(max_length=5, choices=[('nginx', 'nginx'), ('ssh', 'ssh')])
+    event_time = models.DateTimeField()
+    source_ip = models.GenericIPAddressField(null=True, blank=True)
+    action = models.TextField()
+    result = models.TextField()
+    request_path = models.TextField(blank=True)
+    http_status = models.PositiveSmallIntegerField(null=True, blank=True)
+    ssh_evidence = models.TextField(blank=True)
+    raw_log = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
