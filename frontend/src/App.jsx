@@ -54,7 +54,7 @@ function App() {
         {screen === 'dashboard' && <Dashboard />}
         {screen === 'events' && <EventTable selectedId={id} />}
         {(screen === 'alerts' || screen === 'incidents') && <AlertsIncidents mode={screen} selectedId={id} />}
-        {screen === 'response' && <ResponseStatus />}
+        {screen === 'response' && <ResponseStatus selectedId={id} />}
       </main>
       <footer className="footer">시각은 KST(Asia/Seoul) 기준 · 데이터 출처: 관제 서버 Django API</footer>
     </div>

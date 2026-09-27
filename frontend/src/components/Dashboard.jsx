@@ -1,5 +1,5 @@
 import React from 'react';
-import { formatTime, go, ruleLabel, useApi } from '../api';
+import { EXECUTION, formatTime, go, ruleLabel, useApi, verificationLabel } from '../api';
 import Status, { RiskBadge, SourceBadge } from './Status';
 
 const RECENT = 6;
@@ -21,6 +21,7 @@ export default function Dashboard() {
   const events = useApi('/api/events/');
   const alerts = useApi('/api/alerts/');
   const incidents = useApi('/api/incidents/');
+  const responses = useApi('/api/responses/');
 
   const eventList = events.data ?? [];
   const alertList = alerts.data ?? [];
@@ -124,9 +125,21 @@ export default function Dashboard() {
             <h2>최근 자동 대응</h2>
             <a href="#/response">D 화면에서 보기</a>
           </div>
-          <p className="notice">
-            <strong>대응 기록 없음</strong> — 자동 대응(T5)은 구현 및 실장비 검증 예정입니다.
-          </p>
+          <Status state={responses} empty="아직 실제 자동 대응 실행 기록 없음">
+            <table className="table clickable">
+              <thead><tr><th>ID</th><th>대상 IP</th><th>실행 결과</th><th>실제 검증</th></tr></thead>
+              <tbody>
+                {(responses.data ?? []).slice(0, RECENT).map((r) => (
+                  <tr key={r.id} onClick={() => go('response', r.id)}>
+                    <td>#{r.id}</td>
+                    <td className="mono">{r.target_ip ?? '-'}</td>
+                    <td>{EXECUTION[r.execution_status]}</td>
+                    <td>{verificationLabel(r)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Status>
         </section>
       </div>
     </>

@@ -96,3 +96,62 @@ class Incident(models.Model):
     alerts = models.ManyToManyField(Alert, related_name='incidents')
     creation_reason = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class ResponseRecord(models.Model):
+    """Automatic SSH block triggered by an ssh_brute_force Alert. 'succeeded' means only that the
+    UFW command ran successfully; the actual effect is recorded in ResponseVerification."""
+    ALLOWLIST_RESULTS = [('excluded', 'excluded'), ('not_excluded', 'not_excluded'), ('unknown', 'unknown')]
+    EXECUTION_STATUSES = [
+        ('succeeded', 'succeeded'), ('failed', 'failed'), ('skipped', 'skipped'), ('unknown', 'unknown'),
+    ]
+
+    triggering_alert = models.OneToOneField(Alert, on_delete=models.PROTECT, related_name='response')
+    target_ip = models.GenericIPAddressField(null=True, blank=True)
+    action = models.CharField(max_length=16, choices=[('block_ssh', 'block_ssh')], default='block_ssh')
+    allowlist_result = models.CharField(max_length=12, choices=ALLOWLIST_RESULTS)
+    allowlist_detail = models.TextField(blank=True)
+    execution_status = models.CharField(max_length=9, choices=EXECUTION_STATUSES)
+    victim = models.TextField(blank=True)
+    command = models.TextField(blank=True)
+    execution_result = models.TextField(blank=True)
+    failure_reason = models.TextField(blank=True)
+    executed_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class ResponseVerification(models.Model):
+    UFW_RESULTS = [('present', 'present'), ('absent', 'absent'), ('unchecked', 'unchecked')]
+    RECONNECT_RESULTS = [('failed', 'failed'), ('succeeded', 'succeeded'), ('unchecked', 'unchecked')]
+    STATUSES = [('success', 'success'), ('failed', 'failed'), ('unverified', 'unverified')]
+
+    response = models.ForeignKey(ResponseRecord, on_delete=models.PROTECT, related_name='verifications')
+    ufw_rule_result = models.CharField(max_length=9, choices=UFW_RESULTS)
+    ufw_check_evidence = models.TextField(blank=True)
+    kali_ssh_reconnect_result = models.CharField(max_length=9, choices=RECONNECT_RESULTS)
+    reconnect_check_evidence = models.TextField(blank=True)
+    verification_status = models.CharField(max_length=10, choices=STATUSES)
+    verified_at = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def ufw_rule_present(self):
+        return self.ufw_rule_result == 'present'
+
+    @property
+    def reconnect_failed(self):
+        return self.kali_ssh_reconnect_result == 'failed'
+
+    @property
+    def success(self):
+        return self.verification_status == 'success'
+
+    def save(self, *args, **kwargs):
+        # Success requires both checks; a single negative result is a failure, anything else unverified.
+        if self.ufw_rule_present and self.reconnect_failed:
+            self.verification_status = 'success'
+        elif self.ufw_rule_result == 'absent' or self.kali_ssh_reconnect_result == 'succeeded':
+            self.verification_status = 'failed'
+        else:
+            self.verification_status = 'unverified'
+        super().save(*args, **kwargs)

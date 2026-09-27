@@ -127,3 +127,12 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# Automatic response (T5). Non-secret settings; nothing is executed unless RESPONSE_EXECUTE=true.
+RESPONSE_EXECUTE = os.environ.get('RESPONSE_EXECUTE', '').strip().lower() == 'true'
+RESPONSE_ALLOWLIST = os.environ.get('RESPONSE_ALLOWLIST', '')
+RESPONSE_VICTIM_HOST = os.environ.get('RESPONSE_VICTIM_HOST', '')
+RESPONSE_VICTIM_USER = os.environ.get('RESPONSE_VICTIM_USER', '')
+RESPONSE_VICTIM_SSH_PORT = os.environ.get('RESPONSE_VICTIM_SSH_PORT', '22')
+RESPONSE_SSH_KEY_PATH = os.environ.get('RESPONSE_SSH_KEY_PATH', '')

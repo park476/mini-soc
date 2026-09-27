@@ -63,3 +63,15 @@ export function byTime(field) {
 export function go(screen, id) {
   window.location.hash = id ? `/${screen}/${id}` : `/${screen}`;
 }
+
+export const EXECUTION = {
+  succeeded: 'UFW 차단 명령 실행 성공',
+  failed: '실행 실패',
+  skipped: '미실행 (허용 목록 제외)',
+  unknown: '확인 불가',
+};
+export const VERIFY = { success: '검증 성공', failed: '검증 실패', unverified: '미검증' };
+
+export function verificationLabel(record) {
+  return record.verification ? VERIFY[record.verification.verification_status] : '미검증 (검증 기록 없음)';
+}

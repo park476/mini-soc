@@ -1,5 +1,5 @@
 import React from 'react';
-import { byTime, formatTime, go, RULE_ORDER, ruleLabel, useApi } from '../api';
+import { byTime, EXECUTION, formatTime, go, RULE_ORDER, ruleLabel, useApi, verificationLabel } from '../api';
 import Status, { RiskBadge } from './Status';
 
 const INCIDENT_MIN_SCORE = 70;
@@ -58,8 +58,10 @@ function EventLinks({ ids }) {
 
 function AlertDetail({ id, incidents }) {
   const detail = useApi(id ? `/api/alerts/${id}/` : null);
+  const responses = useApi(id ? '/api/responses/' : null);
   if (!id) return <p className="state">목록에서 경보를 선택하세요.</p>;
   const linked = (incidents ?? []).filter((i) => i.alert_ids.includes(id));
+  const response = (responses.data ?? []).find((r) => r.triggering_alert_id === id);
   const a = detail.data;
   return (
     <Status state={detail}>
@@ -82,6 +84,21 @@ function AlertDetail({ id, incidents }) {
                 </button>
               ))}
             </dd>
+            {a.rule_type === 'ssh_brute_force' && (
+              <>
+                <dt>자동 대응</dt>
+                <dd>
+                  {response ? (
+                    <>
+                      <button type="button" className="chip" onClick={() => go('response', response.id)}>
+                        Response #{response.id}
+                      </button>{' '}
+                      {EXECUTION[response.execution_status]} · {verificationLabel(response)}
+                    </>
+                  ) : <span className="muted">{responses.error ? '대응 기록 조회 오류' : '대응 기록 없음'}</span>}
+                </dd>
+              </>
+            )}
           </dl>
         </>
       )}

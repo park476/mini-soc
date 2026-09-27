@@ -129,6 +129,7 @@ a { color: var(--text); }
 .checks li::before { display: inline-block; width: 22px; font-weight: 700; }
 .checks li.ok::before { content: '✓'; color: var(--ok); }
 .checks li.no::before { content: '✗'; color: var(--high); }
+.checks li.pending::before { content: '–'; color: var(--muted); }
 
 .table.score { max-width: 560px; }
 .table.score .num { text-align: right; font-family: var(--mono); }

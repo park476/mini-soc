@@ -1,6 +1,8 @@
 from rest_framework import serializers
 
-from .models import Alert, CorrelationResult, Incident, RiskResult, SecurityEvent
+from .models import (
+    Alert, CorrelationResult, Incident, ResponseRecord, ResponseVerification, RiskResult, SecurityEvent,
+)
 
 
 class SecurityEventSerializer(serializers.ModelSerializer):
@@ -67,3 +69,41 @@ class IncidentSerializer(serializers.ModelSerializer):
             'alert_ids', 'alerts', 'correlation_result_id', 'correlation', 'risk_result', 'created_at',
         )
         read_only_fields = fields
+
+
+class ResponseVerificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ResponseVerification
+        fields = (
+            'id', 'ufw_rule_result', 'ufw_rule_present', 'ufw_check_evidence',
+            'kali_ssh_reconnect_result', 'reconnect_failed', 'reconnect_check_evidence',
+            'verification_status', 'success', 'verified_at',
+        )
+        read_only_fields = fields
+
+
+class ResponseRecordSerializer(serializers.ModelSerializer):
+    triggering_alert = AlertSummarySerializer(read_only=True)
+    triggering_alert_id = serializers.IntegerField(read_only=True)
+    verification = serializers.SerializerMethodField()
+    verification_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ResponseRecord
+        fields = (
+            'id', 'triggering_alert_id', 'triggering_alert', 'target_ip', 'action', 'allowlist_result',
+            'allowlist_detail', 'execution_status', 'victim', 'command', 'execution_result', 'failure_reason',
+            'executed_at', 'completed_at', 'created_at', 'verification', 'verification_count',
+        )
+        read_only_fields = fields
+
+    def _verifications(self, obj):
+        return sorted(obj.verifications.all(), key=lambda v: (v.verified_at, v.pk))
+
+    def get_verification(self, obj):
+        """Latest verification, or null when none has been recorded."""
+        latest = self._verifications(obj)
+        return ResponseVerificationSerializer(latest[-1]).data if latest else None
+
+    def get_verification_count(self, obj):
+        return len(self._verifications(obj))

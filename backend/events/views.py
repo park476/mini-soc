@@ -1,7 +1,9 @@
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 
-from .models import Alert, Incident, SecurityEvent
-from .serializers import AlertSerializer, IncidentSerializer, SecurityEventSerializer
+from .models import Alert, Incident, ResponseRecord, SecurityEvent
+from .serializers import (
+    AlertSerializer, IncidentSerializer, ResponseRecordSerializer, SecurityEventSerializer,
+)
 
 
 class SecurityEventListView(ListAPIView):
@@ -37,3 +39,16 @@ class IncidentListView(ListAPIView):
 class IncidentDetailView(RetrieveAPIView):
     queryset = INCIDENTS
     serializer_class = IncidentSerializer
+
+
+RESPONSES = ResponseRecord.objects.select_related('triggering_alert').prefetch_related('verifications')
+
+
+class ResponseListView(ListAPIView):
+    queryset = RESPONSES.order_by('-created_at', '-id')
+    serializer_class = ResponseRecordSerializer
+
+
+class ResponseDetailView(RetrieveAPIView):
+    queryset = RESPONSES
+    serializer_class = ResponseRecordSerializer
