@@ -1,0 +1,33 @@
+# mini-soc victim rsyslog EXAMPLE — NOT VERIFIED.
+#
+# This file only shows that rsyslog can produce the collector's controlled framing
+#     <source_type>\t<original log line>\n     (source_type: nginx | ssh)
+# and forward it over TCP 5514. It has not been validated with `rsyslogd -N1` or run on the
+# victim. Log paths, program names, timestamp format, TAB escape handling and omfwd framing must
+# be checked on the real victim first. Replace every <PLACEHOLDER>; do not commit real addresses.
+#
+# SSH: the collector's SSH parser requires an RFC 3339 timestamp with an offset
+# (e.g. 2026-09-21T12:00:01+09:00). Traditional "Sep 21 12:00:01" lines are rejected on purpose.
+
+module(load="imfile")
+
+# Nginx access log path is NOT confirmed; use the victim's actual access log.
+input(type="imfile"
+      File="<NGINX_ACCESS_LOG_PATH>"
+      Tag="mini-soc-nginx"
+      Ruleset="mini_soc_nginx")
+
+template(name="MiniSocNginx" type="string" string="nginx\t%msg%\n")
+template(name="MiniSocSsh" type="string"
+         string="ssh\t%timestamp:::date-rfc3339% %hostname% %syslogtag%%msg%\n")
+
+ruleset(name="mini_soc_nginx") {
+    action(type="omfwd" target="<MONITORING_SERVER_ADDRESS>" port="5514" protocol="tcp"
+           template="MiniSocNginx")
+}
+
+# SSH authentication messages as received by rsyslog (source/program name to be confirmed).
+if $programname == "sshd" or $programname == "sshd-session" then {
+    action(type="omfwd" target="<MONITORING_SERVER_ADDRESS>" port="5514" protocol="tcp"
+           template="MiniSocSsh")
+}

@@ -23,6 +23,9 @@ services:
       - ./backend:/app
     ports:
       - "127.0.0.1:8000:8000"
+      # T2-B collector (run manually: python manage.py run_collector). Loopback by default;
+      # set COLLECTOR_BIND to a LAN address only after the victim network is verified.
+      - "${COLLECTOR_BIND:-127.0.0.1}:5514:5514"
     env_file:
       - .env
     depends_on:

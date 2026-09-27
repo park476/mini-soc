@@ -1,0 +1,3 @@
+nginx	192.0.2.10 - - [21/Sep/2026:12:00:00 +0900] "GET /example HTTP/1.1" 200 123 "-" "controlled-tcp"
+ssh	2026-09-21T12:00:01+09:00 victim-sample sshd[100]: Failed password for invalid user admin from 192.0.2.20 port 55555 ssh2
+nginx	this is not an nginx combined log line
