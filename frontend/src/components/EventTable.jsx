@@ -100,7 +100,7 @@ export default function EventTable({ selectedId }) {
             </table>
           </div>
         </Status>
-        <p className="note">정규화 실패 기록은 저장 모델만 있고 조회 API가 아직 없어 이 화면에 표시하지 않습니다.</p>
+        <p className="note">정규화 실패는 TCP 수집기가 원본과 실패 이유를 NormalizationFailure로 저장합니다. 전용 조회 API 계약이 확정되지 않아 이 화면에는 목록을 표시하지 않습니다.</p>
       </section>
       <section className="panel detail">
         <div className="panel-head"><h2>선택 이벤트 상세</h2></div>

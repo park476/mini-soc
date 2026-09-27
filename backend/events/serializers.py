@@ -1,7 +1,8 @@
 from rest_framework import serializers
 
 from .models import (
-    Alert, CorrelationResult, Incident, ResponseRecord, ResponseVerification, RiskResult, SecurityEvent,
+    Alert, CorrelationResult, Incident, LogSourceStatus, ResponseRecord, ResponseVerification, RiskResult,
+    SecurityEvent,
 )
 
 
@@ -107,3 +108,15 @@ class ResponseRecordSerializer(serializers.ModelSerializer):
 
     def get_verification_count(self, obj):
         return len(self._verifications(obj))
+
+
+class LogSourceStatusSerializer(serializers.ModelSerializer):
+    recorded = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LogSourceStatus
+        fields = ('source_type', 'recorded', 'last_received_at', 'last_error', 'delivery_anomaly')
+        read_only_fields = fields
+
+    def get_recorded(self, obj):
+        return obj.pk is not None

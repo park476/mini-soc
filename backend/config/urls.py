@@ -12,12 +12,17 @@ Class-based views
     2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
 Including another URLconf
     1. Import the include() function: from django.urls import include, path
+
+from events.views import DashboardView
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
 from django.urls import include, path
 
+from events.views import DashboardView
+
 urlpatterns = [
+    path('api/dashboard/', DashboardView.as_view(), name='dashboard'),
     path('api/events/', include('events.urls')),
     path('api/alerts/', include('events.alert_urls')),
     path('api/incidents/', include('events.incident_urls')),
