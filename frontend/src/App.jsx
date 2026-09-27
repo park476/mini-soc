@@ -6,10 +6,10 @@ import ResponseStatus from './components/ResponseStatus';
 
 // Hash routes keep direct URLs for capture, e.g. #/incidents/1, without a router dependency.
 const TABS = [
-  { key: 'dashboard', label: 'A 관제 대시보드', routes: ['dashboard'] },
-  { key: 'events', label: 'B 보안 이벤트', routes: ['events'] },
-  { key: 'alerts', label: 'C 경보 / 보안 사고', routes: ['alerts', 'incidents'] },
-  { key: 'response', label: 'D 자동 대응', routes: ['response'] },
+  { key: 'dashboard', label: '관제 현황', routes: ['dashboard'] },
+  { key: 'events', label: '보안 이벤트', routes: ['events'] },
+  { key: 'alerts', label: '경보 · 사고', routes: ['alerts', 'incidents'] },
+  { key: 'response', label: '자동 대응', routes: ['response'] },
 ];
 const ROUTES = TABS.flatMap((tab) => tab.routes);
 
@@ -34,21 +34,22 @@ function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">
-          <h1>소형 보안관제 시스템</h1>
-          <span className="subtitle">Nginx · SSH 로그 기반 탐지 · 상관분석 · 위험도</span>
+        <div className="topbar-inner">
+          <a className="brand" href="#/dashboard">
+            <strong>소형 보안관제 시스템</strong>
+          </a>
+          <nav className="tabs" aria-label="화면 이동">
+            {TABS.map((tab) => {
+              const active = tab.routes.includes(screen);
+              return (
+                <a key={tab.key} href={`#/${tab.routes[0]}`} className={active ? 'tab active' : 'tab'}
+                  aria-current={active ? 'page' : undefined}>
+                  {tab.label}
+                </a>
+              );
+            })}
+          </nav>
         </div>
-        <nav className="tabs" aria-label="화면 이동">
-          {TABS.map((tab) => (
-            <a
-              key={tab.key}
-              href={`#/${tab.routes[0]}`}
-              className={tab.routes.includes(screen) ? 'tab active' : 'tab'}
-            >
-              {tab.label}
-            </a>
-          ))}
-        </nav>
       </header>
       <main className="content">
         {screen === 'dashboard' && <Dashboard />}
@@ -56,7 +57,7 @@ function App() {
         {(screen === 'alerts' || screen === 'incidents') && <AlertsIncidents mode={screen} selectedId={id} />}
         {screen === 'response' && <ResponseStatus selectedId={id} />}
       </main>
-      <footer className="footer">시각은 KST(Asia/Seoul) 기준 · 데이터 출처: 관제 서버 Django API</footer>
+      <footer className="footer"><div className="footer-inner">시각은 KST(Asia/Seoul) 기준 · 데이터 출처: 관제 서버 Django API</div></footer>
     </div>
   );
 }

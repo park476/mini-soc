@@ -1,115 +1,187 @@
 import React from 'react';
-import { EXECUTION, formatTime, go, ruleLabel, useApi, verificationLabel } from '../api';
-import Status, { RiskBadge, SourceBadge } from './Status';
+import {
+  byTime, EXECUTION, formatGap, formatTime, go, RULE_ORDER, RULES, rowProps, ruleLabel, useApi, verificationLabel,
+} from '../api';
+import Status, { SourceLabel } from './Status';
 
-function Count({ label, state, value, detail }) {
-  let shown = value;
-  if (state.loading && !state.data) shown = '…';
-  else if (state.error) shown = '조회 오류';
-  return (
-    <div className="kpi">
-      <span className="kpi-label">{label}</span>
-      <span className="kpi-value">{shown}</span>
-      {detail && !state.error && state.data && <span className="kpi-detail">{detail}</span>}
-    </div>
-  );
-}
+const SHORT = { ssh_brute_force: 'SSH 무차별 대입', nginx_scan: 'Nginx 스캔', nginx_suspicious_path: '의심 경로' };
 
 // Same retry/loading/error handling as other screens, applied to one field of /api/dashboard/.
 function part(state, key) {
   return { ...state, data: state.data ? state.data[key] : null };
 }
 
-function SourceStatusTable({ rows }) {
+function Briefing({ incident }) {
+  const alerts = [...(incident.alerts ?? [])].sort(byTime('occurred_at'));
+  const c = incident.correlation;
+  const basis = incident.risk_result?.score_basis ?? {};
+  const ruleScores = basis.rule_scores ?? {};
+  const level = String(incident.risk_level).toLowerCase();
   return (
-    <table className="table">
-      <thead><tr><th>로그</th><th>마지막 수신 (수집기 기준)</th><th>최근 수신 오류</th><th>전달 이상</th></tr></thead>
-      <tbody>
-        {rows.map((s) => (
-          <tr key={s.source_type}>
-            <td><SourceBadge type={s.source_type} /></td>
-            {s.recorded ? (
-              <>
-                <td className="mono">{formatTime(s.last_received_at)}</td>
-                <td className="wrap small">{s.last_error || '없음'}</td>
-                <td>{s.delivery_anomaly ? <strong>전달 이상 표시</strong> : '이상 판정 없음'}</td>
-              </>
-            ) : (
-              <td colSpan={3} className="muted">수신 기록 없음 (실장비 로그 수신 전)</td>
-            )}
-          </tr>
+    <article className="briefing">
+      <div className="briefing-id">
+        <div>
+          <span className="kicker">현재 보안 상태 · INCIDENT {String(incident.id).padStart(2, '0')}</span>
+          <h1 className="briefing-ip mono">{incident.source_ip}</h1>
+          {c && (
+            <p className="briefing-meta">
+              상관분석 성립 <span className="mono">{formatTime(c.matched_at).slice(11)}</span>
+              <span className="dot-sep">·</span>판단 범위 <span className="mono">{formatTime(c.window_start).slice(11)} – {formatTime(c.window_end).slice(11)}</span>
+            </p>
+          )}
+        </div>
+        <div className={`verdict verdict-${level}`}>
+          <span className="verdict-score">{incident.risk_score}</span>
+          <span className="verdict-level">{String(incident.risk_level).toUpperCase()}</span>
+          <span className="verdict-caption">위험도 / 100</span>
+        </div>
+      </div>
+
+      <ol className="chain" aria-label="공격 흐름">
+        {alerts.map((a, index) => (
+          <li key={a.id}>
+            {index > 0 && <span className="chain-gap mono">{formatGap(alerts[index - 1].occurred_at, a.occurred_at)}</span>}
+            <span className="chain-time mono">{formatTime(a.occurred_at).slice(11)}</span>
+            <span className="chain-node" aria-hidden="true" />
+            <span className="chain-rule">{ruleLabel(a.rule_type)}</span>
+            <span className="chain-ref">{RULES[a.rule_type]?.source} 로그 · 경보 #{a.id}</span>
+          </li>
         ))}
-      </tbody>
-    </table>
+      </ol>
+
+      {incident.risk_result && (
+        <p className="briefing-why">
+          <span className="why-label">왜 {incident.risk_result.score}인가</span>
+          {RULE_ORDER.filter((r) => r in ruleScores).map((r) => (
+            <span key={r} className="why-term"><b>{ruleScores[r]}</b> {SHORT[r]}</span>
+          ))}
+          {basis.correlation_bonus > 0 && <span className="why-term why-corr"><b>{basis.correlation_bonus}</b> 상관분석</span>}
+          <span className="why-sum">= {basis.uncapped}{basis.uncapped > basis.cap && `, 상한 ${basis.cap}`}</span>
+          <a className="link-strong" href={`#/incidents/${incident.id}`}>사건 분석 문서 →</a>
+        </p>
+      )}
+    </article>
+  );
+}
+
+// Event → Alert → Incident → Response as one vertical track of stored counts.
+function Track({ state }) {
+  const c = state.data?.counts ?? {};
+  const latest = state.data?.recent_responses?.[0];
+  const n = (value) => (state.loading && !state.data ? '…' : state.error ? '—' : value);
+  const steps = [
+    { label: '보안 이벤트', value: c.events, href: '#/events', sub: state.data ? `Nginx ${c.nginx_events} · SSH ${c.ssh_events}` : '' },
+    { edge: '탐지 규칙 3종' },
+    { label: '경보', value: c.alerts, href: '#/alerts' },
+    { edge: '동일 IP 10분 상관분석 · 위험도 70 이상' },
+    { label: '보안 사고', value: c.incidents, href: '#/incidents', danger: c.high_incidents > 0, sub: state.data ? `High ${c.high_incidents}` : '' },
+    { edge: 'SSH 무차별 대입 경보가 발동 조건' },
+    { label: '자동 대응 기록', value: c.responses, href: '#/response', pending: true,
+      sub: latest ? `최근 ${EXECUTION[latest.execution_status]} · ${verificationLabel(latest)}` : '실장비 효과 검증 대기' },
+  ];
+  return (
+    <aside className="track" aria-label="관측에서 판단까지">
+      <span className="kicker">관측 → 판단</span>
+      <ol>
+        {steps.map((s) => (s.edge ? (
+          <li key={s.edge} className="track-edge">{s.edge}</li>
+        ) : (
+          <li key={s.label} className={`track-step${s.danger ? ' is-danger' : ''}`}>
+            <a href={s.href}>
+              <span className="track-value">{n(s.value)}</span>
+              <span className="track-label">{s.label}</span>
+              {s.sub && <span className={`track-sub${s.pending ? ' tone-warning' : ''}`}>{s.sub}</span>}
+            </a>
+          </li>
+        )))}
+      </ol>
+    </aside>
+  );
+}
+
+function CollectionPath({ state }) {
+  return (
+    <section className="column">
+      <h2 className="column-title">수집 경로</h2>
+      <dl className="lines">
+        <div><dt>Collector <span className="mono">TCP 5514</span></dt><dd className="tone-success">구현 · 로컬 소켓 검증 완료</dd></div>
+        <div><dt>피해 서버 rsyslog</dt><dd className="tone-warning">실제 수신 검증 대기</dd></div>
+        <Status state={part(state, 'source_status')}>
+          {(state.data?.source_status ?? []).map((s) => (
+            <div key={s.source_type}>
+              <dt><SourceLabel type={s.source_type} /></dt>
+              {s.recorded ? (
+                <dd>
+                  마지막 수신 <span className="mono">{formatTime(s.last_received_at)}</span>
+                  <span className="sub">{s.delivery_anomaly ? '전달 이상 표시' : '이상 판정 없음'}</span>
+                  {s.last_error && <span className="sub tone-danger">{s.last_error}</span>}
+                </dd>
+              ) : (
+                <dd>수신 기록 없음<span className="sub">실장비 로그 수신 전</span></dd>
+              )}
+            </div>
+          ))}
+        </Status>
+      </dl>
+      <p className="note">무수신(전달 이상) 자동 판정은 아직 없어 &quot;이상 판정 없음&quot;은 정상 수신을 뜻하지 않습니다.</p>
+    </section>
   );
 }
 
 export default function Dashboard() {
   const dashboard = useApi('/api/dashboard/');
-  const counts = dashboard.data?.counts ?? {};
+  const incident = dashboard.data?.recent_incidents?.[0];
 
   return (
-    <>
-      <section className="kpis" aria-label="집계">
-        <Count label="보안 이벤트" state={dashboard} value={counts.events}
-          detail={`Nginx ${counts.nginx_events} · SSH ${counts.ssh_events}`} />
-        <Count label="경보 (Alert)" state={dashboard} value={counts.alerts} />
-        <Count label="보안 사고 (Incident)" state={dashboard} value={counts.incidents} />
-        <Count label="High 보안 사고" state={dashboard} value={counts.high_incidents} />
-      </section>
-
-      <section className="panel">
-        <div className="panel-head"><h2>로그 수신 상태</h2></div>
-        <p className="notice">
-          <strong>TCP 5514 수집기 구현 및 로컬 소켓 검증 완료 / 실제 피해 서버 rsyslog 수신 검증 대기</strong><br />
-          무수신(전달 이상) 자동 판정은 아직 없어 &quot;이상 판정 없음&quot;은 정상 수신을 뜻하지 않습니다.
-        </p>
-        <Status state={part(dashboard, 'source_status')}>
-          <SourceStatusTable rows={dashboard.data?.source_status ?? []} />
-        </Status>
-      </section>
-
-      <section className="panel">
-        <div className="panel-head">
-          <h2>최근 보안 사고</h2>
-          <a href="#/incidents">C 화면에서 보기</a>
+    <div className="dashboard">
+      <section className="band">
+        <div className="band-inner dash-top">
+          <Status state={part(dashboard, 'recent_incidents')} empty={(
+            <div className="briefing briefing-none">
+              <span className="kicker">현재 보안 상태</span>
+              <p className="none-title">현재 보안 사고 없음</p>
+              <p className="note">보안 사고는 상관분석 성립 + 위험도 70 이상일 때만 생성됩니다.</p>
+            </div>
+          )}>
+            {incident && <Briefing incident={incident} />}
+          </Status>
+          <Track state={dashboard} />
         </div>
-        <Status state={part(dashboard, 'recent_incidents')} empty="생성된 보안 사고 없음">
-          <table className="table clickable">
-            <thead>
-              <tr><th>ID</th><th>발생 시각</th><th>출발지 IP</th><th>위험도</th><th>연결 경보</th><th>생성 근거</th></tr>
-            </thead>
-            <tbody>
-              {(dashboard.data?.recent_incidents ?? []).map((i) => (
-                <tr key={i.id} onClick={() => go('incidents', i.id)}>
-                  <td>#{i.id}</td>
-                  <td className="mono">{formatTime(i.occurred_at)}</td>
-                  <td className="mono">{i.source_ip}</td>
-                  <td><RiskBadge level={i.risk_level} score={i.risk_score} /></td>
-                  <td>{(i.alerts ?? []).map((a) => ruleLabel(a.rule_type)).join(', ')}</td>
-                  <td className="wrap">{i.creation_reason}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Status>
       </section>
 
-      <div className="columns">
-        <section className="panel">
-          <div className="panel-head">
-            <h2>최근 경보</h2>
-            <a href="#/alerts">C 화면에서 보기</a>
-          </div>
+      <div className="dash-bottom">
+        <CollectionPath state={dashboard} />
+
+        <section className="column">
+          <h2 className="column-title">최근 보안 이벤트 <a className="more" href="#/events">전체 보기</a></h2>
+          <Status state={part(dashboard, 'recent_events')} empty="저장된 이벤트 없음">
+            <table className="list">
+              <tbody>
+                {(dashboard.data?.recent_events ?? []).map((e) => (
+                  <tr key={e.id} {...rowProps(() => go('events', e.id))}>
+                    <td className="mono">{formatTime(e.event_time)}</td>
+                    <td><SourceLabel type={e.source_type} /></td>
+                    <td className="mono">{e.source_ip ?? '-'}</td>
+                    <td className="clip">
+                      {e.action} {e.http_status ?? e.result}
+                      {e.request_path && <span className="mono muted"> {e.request_path}</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Status>
+        </section>
+
+        <section className="column">
+          <h2 className="column-title">최근 경보 <a className="more" href="#/alerts">전체 보기</a></h2>
           <Status state={part(dashboard, 'recent_alerts')} empty="생성된 경보 없음">
-            <table className="table clickable">
-              <thead><tr><th>ID</th><th>발생 시각</th><th>탐지 규칙</th><th>출발지 IP</th></tr></thead>
+            <table className="list">
               <tbody>
                 {(dashboard.data?.recent_alerts ?? []).map((a) => (
-                  <tr key={a.id} onClick={() => go('alerts', a.id)}>
-                    <td>#{a.id}</td>
+                  <tr key={a.id} {...rowProps(() => go('alerts', a.id))}>
                     <td className="mono">{formatTime(a.occurred_at)}</td>
-                    <td>{ruleLabel(a.rule_type)}</td>
+                    <td className="strong">{ruleLabel(a.rule_type)}</td>
                     <td className="mono">{a.source_ip}</td>
                   </tr>
                 ))}
@@ -117,53 +189,7 @@ export default function Dashboard() {
             </table>
           </Status>
         </section>
-
-        <section className="panel">
-          <div className="panel-head">
-            <h2>최근 보안 이벤트</h2>
-            <a href="#/events">B 화면에서 보기</a>
-          </div>
-          <Status state={part(dashboard, 'recent_events')} empty="저장된 이벤트 없음">
-            <table className="table clickable">
-              <thead><tr><th>ID</th><th>발생 시각</th><th>로그</th><th>출발지 IP</th><th>행동 / 결과</th></tr></thead>
-              <tbody>
-                {(dashboard.data?.recent_events ?? []).map((e) => (
-                  <tr key={e.id} onClick={() => go('events', e.id)}>
-                    <td>#{e.id}</td>
-                    <td className="mono">{formatTime(e.event_time)}</td>
-                    <td><SourceBadge type={e.source_type} /></td>
-                    <td className="mono">{e.source_ip ?? '-'}</td>
-                    <td>{e.action} / {e.http_status ?? e.result}{e.request_path && ` ${e.request_path}`}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Status>
-        </section>
       </div>
-
-      <section className="panel">
-        <div className="panel-head">
-          <h2>최근 자동 대응</h2>
-          <a href="#/response">D 화면에서 보기</a>
-        </div>
-        <Status state={part(dashboard, 'recent_responses')} empty="아직 실제 자동 대응 실행 기록 없음">
-          <table className="table clickable">
-            <thead><tr><th>ID</th><th>대상 IP</th><th>발동 경보</th><th>실행 결과</th><th>실제 검증</th></tr></thead>
-            <tbody>
-              {(dashboard.data?.recent_responses ?? []).map((r) => (
-                <tr key={r.id} onClick={() => go('response', r.id)}>
-                  <td>#{r.id}</td>
-                  <td className="mono">{r.target_ip ?? '-'}</td>
-                  <td>#{r.triggering_alert_id}</td>
-                  <td>{EXECUTION[r.execution_status]}</td>
-                  <td>{verificationLabel(r)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Status>
-      </section>
-    </>
+    </div>
   );
 }

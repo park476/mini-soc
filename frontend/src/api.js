@@ -75,3 +75,28 @@ export const VERIFY = { success: '검증 성공', failed: '검증 실패', unver
 export function verificationLabel(record) {
   return record.verification ? VERIFY[record.verification.verification_status] : '미검증 (검증 기록 없음)';
 }
+
+// Clickable table rows: mouse click plus Enter/Space for keyboard users.
+export function rowProps(onActivate, selected = false) {
+  return {
+    tabIndex: 0,
+    className: selected ? 'row-link selected' : 'row-link',
+    'aria-current': selected ? 'true' : undefined,
+    onClick: onActivate,
+    onKeyDown: (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        onActivate();
+      }
+    },
+  };
+}
+
+// Display-only gap between two stored timestamps, e.g. "+1분 20초".
+export function formatGap(from, to) {
+  const seconds = Math.round((new Date(to) - new Date(from)) / 1000);
+  if (!Number.isFinite(seconds)) return '';
+  const abs = Math.abs(seconds);
+  const text = abs >= 60 ? `${Math.floor(abs / 60)}분${abs % 60 ? ` ${abs % 60}초` : ''}` : `${abs}초`;
+  return `${seconds < 0 ? '-' : '+'}${text}`;
+}
