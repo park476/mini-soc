@@ -15,6 +15,19 @@ function HighlightIp({ text, ip }) {
   return text.split(ip).flatMap((part, index) => (index === 0 ? [part] : [<mark key={index} className="mono">{ip}</mark>, part]));
 }
 
+// Display only: stored rule_condition joins conditions with ", " (all required). A trailing
+// "one of a, b, c" list is alternatives, so its items are joined with OR instead of AND.
+function conditionParts(condition) {
+  const marker = ' one of ';
+  const at = condition.indexOf(marker);
+  const required = (at === -1 ? condition : condition.slice(0, at + marker.length - 1)).split(', ');
+  const alternatives = at === -1 ? [] : condition.slice(at + marker.length).split(', ');
+  return [
+    ...required.map((text) => ({ op: 'AND', text })),
+    ...alternatives.map((text, index) => ({ op: index === 0 ? '' : 'OR', text })),
+  ];
+}
+
 function AlertIndex({ state, selectedId }) {
   return (
     <Status state={state} empty="생성된 경보 없음">
@@ -80,10 +93,10 @@ function AlertJudgement({ id, incidents }) {
             <li>
               <span className="step-name">규칙 논리 <span className="mono">{a.rule_type}</span></span>
               <p className="rule-chain">
-                {a.rule_condition.split(', ').map((part, index) => (
-                  <React.Fragment key={part}>
-                    {index > 0 && <span className="rule-and">AND</span>}
-                    <span className="mono">{part}</span>
+                {conditionParts(a.rule_condition).map(({ op, text }, index) => (
+                  <React.Fragment key={text}>
+                    {index > 0 && op && <span className="rule-and">{op}</span>}
+                    <span className="mono">{text}</span>
                   </React.Fragment>
                 ))}
               </p>

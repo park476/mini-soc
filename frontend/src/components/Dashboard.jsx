@@ -64,6 +64,15 @@ function Briefing({ incident }) {
   );
 }
 
+// Colour for the latest stored response: success only when its effect verification succeeded.
+function responseTone(record) {
+  if (!record) return '';
+  const verification = record.verification?.verification_status;
+  if (verification === 'success') return 'success';
+  if (verification === 'failed' || record.execution_status === 'failed') return 'danger';
+  return 'warning';
+}
+
 // Event → Alert → Incident → Response as one vertical track of stored counts.
 function Track({ state }) {
   const c = state.data?.counts ?? {};
@@ -76,8 +85,9 @@ function Track({ state }) {
     { edge: '동일 IP 10분 상관분석 · 위험도 70 이상' },
     { label: '보안 사고', value: c.incidents, href: '#/incidents', danger: c.high_incidents > 0, sub: state.data ? `High ${c.high_incidents}` : '' },
     { edge: 'SSH 무차별 대입 경보가 발동 조건' },
-    { label: '자동 대응 기록', value: c.responses, href: '#/response', pending: true,
-      sub: latest ? `최근 ${EXECUTION[latest.execution_status]} · ${verificationLabel(latest)}` : '실장비 효과 검증 대기' },
+    // Stored records only: the count and the latest record's result, not whether automatic response is enabled.
+    { label: '자동 대응 기록', value: c.responses, href: '#/response', tone: responseTone(latest),
+      sub: !state.data ? '' : latest ? `최근 기록: ${EXECUTION[latest.execution_status]} · ${verificationLabel(latest)}` : '대응 기록 없음' },
   ];
   return (
     <aside className="track" aria-label="관측에서 판단까지">
@@ -90,7 +100,7 @@ function Track({ state }) {
             <a href={s.href}>
               <span className="track-value">{n(s.value)}</span>
               <span className="track-label">{s.label}</span>
-              {s.sub && <span className={`track-sub${s.pending ? ' tone-warning' : ''}`}>{s.sub}</span>}
+              {s.sub && <span className={`track-sub${s.tone ? ` tone-${s.tone}` : ''}`}>{s.sub}</span>}
             </a>
           </li>
         )))}
@@ -100,14 +110,26 @@ function Track({ state }) {
 }
 
 function CollectionPath({ state }) {
+  const sources = state.data?.source_status ?? [];
+  // Derived from stored receive records only; says nothing about whether delivery is healthy right now.
+  const received = sources.filter((s) => s.recorded && s.last_received_at);
+  const lastReceived = received.map((s) => s.last_received_at).sort().at(-1);
   return (
     <section className="column">
       <h2 className="column-title">수집 경로</h2>
       <dl className="lines">
         <div><dt>Collector <span className="mono">TCP 5514</span></dt><dd className="tone-success">구현 · 로컬 소켓 검증 완료</dd></div>
-        <div><dt>피해 서버 rsyslog</dt><dd className="tone-warning">실제 수신 검증 대기</dd></div>
         <Status state={part(state, 'source_status')}>
-          {(state.data?.source_status ?? []).map((s) => (
+          <div>
+            <dt>피해 서버 로그 수신</dt>
+            {received.length ? (
+              <dd className="tone-success">
+                수신 기록 있음 ({received.length}/{sources.length}종)
+                <span className="sub">최근 <span className="mono">{formatTime(lastReceived)}</span></span>
+              </dd>
+            ) : <dd className="tone-warning">수신 기록 없음</dd>}
+          </div>
+          {sources.map((s) => (
             <div key={s.source_type}>
               <dt><SourceLabel type={s.source_type} /></dt>
               {s.recorded ? (
@@ -117,7 +139,7 @@ function CollectionPath({ state }) {
                   {s.last_error && <span className="sub tone-danger">{s.last_error}</span>}
                 </dd>
               ) : (
-                <dd>수신 기록 없음<span className="sub">실장비 로그 수신 전</span></dd>
+                <dd>수신 기록 없음</dd>
               )}
             </div>
           ))}
