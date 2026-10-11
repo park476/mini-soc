@@ -136,3 +136,22 @@ RESPONSE_VICTIM_HOST = os.environ.get('RESPONSE_VICTIM_HOST', '')
 RESPONSE_VICTIM_USER = os.environ.get('RESPONSE_VICTIM_USER', '')
 RESPONSE_VICTIM_SSH_PORT = os.environ.get('RESPONSE_VICTIM_SSH_PORT', '22')
 RESPONSE_SSH_KEY_PATH = os.environ.get('RESPONSE_SSH_KEY_PATH', '')
+
+# Admin SSH unblock (events/unblock.py). Separate opt-in: RESPONSE_EXECUTE does not enable unblocking
+# and RESPONSE_UNBLOCK_EXECUTE does not enable automatic blocking.
+RESPONSE_UNBLOCK_EXECUTE = os.environ.get('RESPONSE_UNBLOCK_EXECUTE', '').strip().lower() == 'true'
+
+# React 관리자 패널: the Vite dev proxy forwards /api with Host backend:8000, so the browser's Origin
+# must be listed for Django's CSRF origin check. Exact dev origins only; this is not CORS.
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip() for origin in os.environ.get(
+        'CSRF_TRUSTED_ORIGINS', 'http://127.0.0.1:5173,http://localhost:5173',
+    ).split(',') if origin.strip()
+]
+
+# Manual admin SSH block / re-block from the React 관리자 패널 (events/ip_actions.py). A third, separate
+# opt-in: it neither needs nor enables RESPONSE_EXECUTE (automatic) or RESPONSE_UNBLOCK_EXECUTE.
+RESPONSE_MANUAL_BLOCK_EXECUTE = os.environ.get('RESPONSE_MANUAL_BLOCK_EXECUTE', '').strip().lower() == 'true'
+# Exact IPs (no CIDR) an administrator may block/unblock from the panel. Must match what the victim's
+# sudoers actually permits; every other IP is view-only. Empty = the whole panel is view-only.
+RESPONSE_MANUAL_TARGETS = os.environ.get('RESPONSE_MANUAL_TARGETS', '')

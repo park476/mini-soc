@@ -1,0 +1,63 @@
+{% extends "admin/base_site.html" %}
+{% load admin_urls %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">Home</a>
+&rsaquo; <a href="{% url opts|admin_urlname:'changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+&rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<p>아래 기록의 대상 IP에 대해 피해 서버({{ victim }}) UFW의 TCP 22 DENY 규칙을 삭제합니다.
+IP와 명령은 저장된 ResponseRecord에서만 만들어지며 이 화면에서 바꿀 수 없습니다.</p>
+
+{% if not execute_enabled %}
+<p class="errornote">{{ execute_setting }}가 true가 아닙니다. 확인해도 원격 명령은 전송되지 않고 실패 기록만 남습니다.</p>
+{% endif %}
+
+{% if rows %}
+<table>
+<thead><tr><th>ResponseRecord</th><th>IP</th><th>Alert</th><th>차단 실행 시각</th><th>실행할 명령</th></tr></thead>
+<tbody>
+{% for row in rows %}
+<tr>
+<td>#{{ row.record.pk }}</td>
+<td>{{ row.record.target_ip }}</td>
+<td>#{{ row.record.triggering_alert_id }} ({{ row.record.triggering_alert.rule_type }})</td>
+<td>{{ row.record.executed_at }}</td>
+<td><code>{{ row.command }}</code></td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p class="errornote">선택한 기록 중 성공한 SSH 차단 기록이 없습니다.</p>
+{% endif %}
+
+{% if ineligible %}
+<p>제외됨(성공한 SSH 차단이 아님): {% for r in ineligible %}#{{ r.pk }} {{ r.execution_status }}{% if not forloop.last %}, {% endif %}{% endfor %}</p>
+{% endif %}
+
+<h2>위험성</h2>
+<ul>
+<li>해제하면 해당 IP가 피해 서버 SSH(22/tcp)에 다시 접속을 시도할 수 있습니다. 공격이 계속 중이면 다시 노출됩니다.</li>
+<li>실행 전 <code>sudo -n ufw status</code>로 규칙 존재를 확인하고, 규칙이 없으면 삭제 명령을 보내지 않습니다.</li>
+<li>기존 ResponseRecord·ResponseVerification은 변경되지 않으며 결과는 UnblockRecord에 따로 기록됩니다.</li>
+<li>명령 실행 성공은 Kali SSH 재접속 성공을 의미하지 않습니다. 재접속은 별도로 확인해 UnblockRecord에 기록합니다.</li>
+</ul>
+
+{% if rows %}
+<form method="post" action="{% url opts|admin_urlname:'changelist' %}">{% csrf_token %}
+{% for pk in selected %}<input type="hidden" name="_selected_action" value="{{ pk }}">{% endfor %}
+<input type="hidden" name="action" value="unblock_ssh">
+<input type="hidden" name="confirm_unblock" value="yes">
+<p><label><input type="checkbox" name="acknowledge" required> 위 IP·명령·위험성을 확인했으며 차단 해제를 실행합니다.</label></p>
+<input type="submit" value="차단 해제 실행">
+<a href="{% url opts|admin_urlname:'changelist' %}" class="button cancel-link">취소</a>
+</form>
+{% else %}
+<a href="{% url opts|admin_urlname:'changelist' %}" class="button cancel-link">돌아가기</a>
+{% endif %}
+{% endblock %}

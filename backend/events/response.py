@@ -3,7 +3,7 @@
 Flow: ssh_brute_force Alert -> validate source_ip -> allowlist -> SSH to the victim ->
 `sudo -n ufw prepend deny proto tcp from <ip> to any port 22` -> ResponseRecord.
 Nothing is sent unless RESPONSE_EXECUTE is enabled and the victim settings are complete.
-Tests inject a fake executor; no unblock is implemented (manual by an administrator).
+Tests inject a fake executor. Unblocking is a separate, admin-only flow in events/unblock.py.
 """
 import ipaddress
 import re
@@ -66,9 +66,10 @@ class SshExecutor:
     key_path: str = ''
 
     @classmethod
-    def from_settings(cls):
-        if not settings.RESPONSE_EXECUTE:
-            raise ResponseConfigError('Remote execution is disabled (RESPONSE_EXECUTE is not true); no command was sent.')
+    def from_settings(cls, execute_setting='RESPONSE_EXECUTE'):
+        # Blocking and unblocking are opted into separately; each caller names its own flag.
+        if getattr(settings, execute_setting, False) is not True:
+            raise ResponseConfigError(f'Remote execution is disabled ({execute_setting} is not true); no command was sent.')
         host, user = settings.RESPONSE_VICTIM_HOST.strip(), settings.RESPONSE_VICTIM_USER.strip()
         missing = [name for name, value in (('RESPONSE_VICTIM_HOST', host), ('RESPONSE_VICTIM_USER', user)) if not value]
         if missing:
@@ -185,6 +186,15 @@ def run_responses(alert_id=None, executor=None, retry_failed=False):
 _UFW_DENY_RE = re.compile(r'^(?P<to>\S+)(?: \(v6\))?\s+DENY(?: IN)?\s+(?P<source>\S+)')
 
 
+def find_deny_rule(status_output, ip):
+    """The `ufw status` line denying exactly this IP on TCP 22, or None."""
+    for line in status_output.splitlines():
+        m = _UFW_DENY_RE.match(line.strip())
+        if m and m['to'] == f'{BLOCKED_PORT}/tcp' and m['source'] == str(ip):
+            return line.strip()
+    return None
+
+
 def check_ufw_rule(executor, ip):
     """Read `ufw status` on the victim. Returns (ufw_rule_result, evidence)."""
     try:
@@ -193,10 +203,9 @@ def check_ufw_rule(executor, ip):
         return 'unchecked', f'ufw status could not be read: {exc}'
     if result.returncode != 0:
         return 'unchecked', f'ufw status failed: {_summary(result)}'
-    for line in result.stdout.splitlines():
-        m = _UFW_DENY_RE.match(line.strip())
-        if m and m['to'] == f'{BLOCKED_PORT}/tcp' and m['source'] == str(ip):
-            return 'present', f'ufw status line: {line.strip()}'
+    line = find_deny_rule(result.stdout, ip)
+    if line:
+        return 'present', f'ufw status line: {line}'
     return 'absent', f'No "{BLOCKED_PORT}/tcp DENY {ip}" line in ufw status output.'
 
 

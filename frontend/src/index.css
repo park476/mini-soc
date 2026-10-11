@@ -411,3 +411,55 @@ mark { background: var(--blue-tint); color: var(--blue); padding: 0 2px; }
 @media (max-width: 1360px) {
   .criteria-eq { grid-template-columns: minmax(0, 1fr); row-gap: 14px; }
 }
+
+/* 관리자 패널 — reuses the existing tokens; only forms, buttons and the confirm dialog are new. */
+.btn { display: inline-flex; align-items: center; min-height: 40px; padding: 0 16px; font-size: 14.5px; font-weight: 700; border: 1px solid var(--ink); background: var(--paper); transition: background-color var(--ease), color var(--ease); }
+.btn:hover:not(:disabled) { background: var(--hover); }
+.btn:focus-visible, .admin-form input:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.btn:disabled { color: var(--ink-3); border-color: var(--rule-2); background: var(--tint); cursor: not-allowed; }
+.btn-primary { background: var(--ink); color: var(--paper); }
+.btn-primary:hover:not(:disabled) { background: var(--ink-2); }
+.btn-danger { background: var(--red); border-color: var(--red); color: var(--paper); }
+.btn-danger:hover:not(:disabled) { background: #a02217; }
+.admin-login { max-width: 420px; }
+.admin-form { display: flex; flex-direction: column; gap: 16px; margin-top: 28px; padding-top: 20px; border-top: 2px solid var(--ink); }
+.admin-form label { display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; font-weight: 700; color: var(--ink-2); }
+.admin-form input { font: inherit; font-weight: 400; color: var(--ink); min-height: 42px; padding: 0 12px; background: var(--paper); border: 1px solid var(--rule-2); }
+.admin-form .btn { align-self: flex-start; }
+.admin { display: flex; flex-direction: column; gap: 40px; }
+.admin-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; flex-wrap: wrap; }
+.admin-user { display: flex; align-items: center; gap: 14px; font-size: 14.5px; color: var(--ink-2); }
+.admin-notice { padding: 14px 18px; background: var(--paper); border-left: 3px solid currentColor; overflow-wrap: anywhere; }
+.admin-blocks { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 24px; }
+.admin-block { background: var(--paper); border: 1px solid var(--rule); padding: 22px 24px; }
+.admin-block .margin-facts > div { grid-template-columns: 112px minmax(0, 1fr); }
+.admin-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 18px; }
+.admin-actions .note { margin-top: 0; }
+.admin-table { overflow-x: auto; }
+.admin-dialog { width: min(560px, calc(100vw - 32px)); margin: auto; padding: 26px 28px; border: 1px solid var(--ink); background: var(--paper); color: var(--ink); }
+.admin-dialog::backdrop { background: rgba(16, 19, 23, 0.45); }
+.admin-dialog h2 { font-size: 22px; font-weight: 700; letter-spacing: -0.4px; margin: 4px 0 8px; }
+.admin-dialog .admin-actions { justify-content: flex-end; }
+
+/* 관리자 패널 · IP 중심 위협 관리 테이블 */
+.btn-small { min-height: 32px; padding: 0 12px; font-size: 13.5px; white-space: nowrap; }
+.admin { gap: 28px; }
+.admin-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 32px; border-top: 2px solid var(--ink); }
+.admin-stats > div { padding: 12px 0 14px; border-bottom: 1px solid var(--rule); }
+.admin-stats dt { font-size: 13.5px; font-weight: 700; color: var(--ink-3); }
+.admin-stats dd { font-size: 34px; font-weight: 800; letter-spacing: -0.8px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.admin-toolbar { display: flex; align-items: flex-end; gap: 14px 28px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 2px solid var(--ink); }
+.admin-toolbar-end { display: flex; gap: 10px; margin-left: auto; }
+.admin-search { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 700; color: var(--ink-3); }
+.admin-search input, .admin-search select { font: inherit; font-size: 14.5px; font-weight: 400; color: var(--ink); min-height: 32px; padding: 0 10px; background: var(--paper); border: 1px solid var(--rule-2); }
+.admin-search input { width: 200px; }
+.admin-search input:focus-visible, .admin-search select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.admin-table { background: var(--paper); padding: 0 16px; }
+.admin-table .log th { position: static; white-space: nowrap; }
+.admin-table .log td { padding: 10px 14px 10px 0; border-bottom: 1px solid var(--rule); vertical-align: top; font-variant-numeric: tabular-nums; }
+.admin-table .log tr:last-child td { border-bottom: 0; }
+.admin-rule { display: block; white-space: nowrap; }
+.row-fixture td { color: var(--ink-3); background: repeating-linear-gradient(135deg, transparent 0 8px, var(--tint) 8px 9px); }
+.row-fixture strong { font-weight: 600; }
+@media (max-width: 720px) { .admin-stats { grid-template-columns: minmax(0, 1fr); } .admin-toolbar-end { margin-left: 0; } }
+.admin-table .log td:last-child { white-space: normal; min-width: 150px; }

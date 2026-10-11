@@ -120,3 +120,82 @@ STEP 1 사용자 결정 기록 상태이며 STEP 2나 구현으로 자동 진행
 장비 확보, 실제 학교 LAN·WSL2 연결, 실제 로그 위치·형식, 포트·IP·권한 및 동작 확인은 [검증 예정]이다. 특히 D1은 장비 대여·확보 전이라는 상태를 유지한다. 이 상태는 역할·배치 설계 결정 미완료를 뜻하지 않는다.
 
 재검토 결과: F1~F6 요구사항과 STEP 1 사용자 결정 정리를 완료했다. 현재 STEP 1에서 추가로 필요한 사용자 결정은 없다. STEP 1 완료는 후속 상세 설계나 구현·검증 완료, READY TO CODE 판정이 아니다. STEP 2는 진행 가능한 상태이나 사용자의 진행 지시 전에는 시작하지 않는다.
+
+## 2026-10-12 — 관리자 패널 SSH 차단 해제 MVP (사용자 최신 결정)
+
+근거: 사용자의 최신 명시적 지시. 구현 단계(READY TO CODE 통과 후)의 결정이며 아래 기존 문서 내용보다 우선한다.
+
+### 기존 문서와 달라지는 점
+
+| 기존 내용 | 최신 결정 |
+|---|---|
+| D16: 자동 해제 없음, 관리자가 피해 서버에서 수동 해제 | 자동 해제 없음은 유지. 수동 해제 수단으로 Django 관리자 패널에서 superuser가 실행하는 원격 해제를 추가 |
+| 02_flow_screens·03_wireframes·04_features_data_api: 웹 차단 해제 버튼·해제 API를 두지 않음 | React 관제 화면과 DRF API에는 여전히 해제 기능을 두지 않음. 해제는 Django Admin(세션 로그인·CSRF·POST)에서만 실행하고 React에는 Admin으로 가는 링크만 추가 |
+
+위 문서 본문과 PRD는 수정하지 않았다. 이 기록이 해당 항목의 현재 상태다.
+
+### 확정 내용
+
+- 실행 권한: superuser만. 대상은 실행 성공(`succeeded`)한 `block_ssh` ResponseRecord만.
+- IP·명령은 저장된 ResponseRecord.target_ip를 `ipaddress`로 검증해 고정 형식으로만 만든다. 요청 입력값은 사용하지 않는다.
+- 순서: `sudo -n ufw status` 확인 → 해당 IP의 22/tcp DENY 규칙이 있을 때만 `sudo -n ufw delete deny proto tcp from <ip> to any port 22` → `sudo -n ufw status` 재확인. 규칙이 없으면 삭제 명령을 보내지 않는다.
+- 별도 opt-in `RESPONSE_UNBLOCK_EXECUTE`(기본 False). `RESPONSE_EXECUTE`(자동 차단, 기본 False 유지)와 서로를 켜거나 요구하지 않는다.
+- 감사 기록은 신규 `UnblockRecord`에 저장한다(요청 관리자, IP, 시각, 실행 결과, 해제 전·후 UFW 확인, 오류 종류: SSH 오류·sudo 거부·타임아웃 구분). 기존 ResponseRecord·ResponseVerification은 수정·삭제하지 않는다.
+- 해제 명령 실행 성공과 Kali SSH 재접속 성공은 별개 항목이다. 재접속 결과는 실제 관찰 후 UnblockRecord에 따로 입력한다.
+- 관리자 해제는 `run_analysis`·`run_responses`를 호출하지 않는다.
+- 피해 서버 sudoers는 현재 허용된 192.168.1.4에 대한 삭제 명령 한 줄만 추가한다. 임의 IP로 확대하지 않으며 실제 장비에서 사용자가 직접 설정한다.
+- 실제 미니 PC에 UFW 차단·해제 명령을 보내기 전에는 사용자 확인을 받는다. 테스트는 fake executor만 사용한다.
+- 미니 PC의 Apache:80, Juice Shop:3000, Nginx:8080은 변경하지 않는다.
+
+### 확인하지 못한 것
+
+- 지시문의 `GPT 새 하네스.txt`, `졸업프로젝트용 GPT 하네스.txt`는 저장소에서 찾지 못했다. AGENTS.md, docs/PRD.md, docs/project_harness.md, 본 문서, docs/reference/handoff를 기준으로 했다.
+- 실제 피해 서버에서의 해제 실행과 Kali 재접속은 아직 수행하지 않았다.
+
+## 2026-10-12 — React 관리자 패널 통합 (사용자 최신 결정)
+
+근거: 사용자의 최신 명시적 지시. 같은 날의 "관리자 패널 SSH 차단 해제 MVP" 기록 중 아래 항목을 대체한다.
+
+### 앞선 기록과 달라지는 점
+
+| 앞선 기록 | 최신 결정 |
+|---|---|
+| React 관제 화면과 DRF API에는 해제 기능을 두지 않고 Django Admin 링크만 추가 | React 상단에 "관리자 패널" 탭을 두고 로그인·SSH 차단 관리·해제를 같은 디자인으로 제공. Django Admin 링크는 제거 |
+| 해제는 Django Admin에서만 실행 | Django Admin 기능은 그대로 유지하되 사용자에게 노출하지 않음. 발표용 경로는 React 관리자 패널 |
+
+PRD와 02·03·04 설계 문서 본문은 수정하지 않았다. 이 기록이 해당 항목의 현재 상태다.
+
+### 확정 내용
+
+- 인증: 기존 Django User·Session. 서버가 요청마다 `is_active`와 `is_superuser`를 검사한다. 비밀번호·세션 토큰을 localStorage에 저장하지 않는다(세션 쿠키는 HttpOnly).
+- API(`/api/admin-panel/`): 세션 확인, 로그인, 로그아웃, 차단 기록 조회, UFW 현재 상태 확인, 차단 해제, 해제 이력 조회. 모든 변경 요청은 POST + CSRF.
+- 해제 API는 ResponseRecord id와 명시적 확인값만 받는다. IP·명령은 요청에서 받지 않고 `events/unblock.py`의 기존 검증을 그대로 사용한다.
+- 과거 실행 결과(`execution_status=succeeded`)와 피해 서버의 현재 UFW 상태는 별개로 표시한다. 현재 상태는 관리자가 요청할 때 `sudo -n ufw status`로 읽으며 저장하지 않는다. 해제 버튼은 차단 규칙이 실제로 확인된 경우에만 활성화한다.
+- 이전 UnblockRecord(`skipped` 포함)는 이후 해제 시도를 막지 않는다.
+- 개발 통신: 브라우저는 127.0.0.1:5173의 Vite `/api` 프록시로 동일 출처 요청을 보낸다. 프록시가 Host를 `backend:8000`으로 바꾸므로 Django CSRF 출처 검사를 위해 `CSRF_TRUSTED_ORIGINS`에 개발 출처 두 개(127.0.0.1:5173, localhost:5173)만 등록했다. CORS 허용은 추가하지 않았다.
+- `RESPONSE_EXECUTE` 기본 False, `RESPONSE_UNBLOCK_EXECUTE` 별도 opt-in은 그대로다.
+- 실제 UFW 변경은 사용자 승인 전에는 실행하지 않는다.
+
+## 2026-10-12 — 관리자 패널 IP 중심 위협 관리와 수동 SSH 차단 (사용자 최신 결정)
+
+근거: 사용자의 최신 명시적 지시. 같은 날 앞선 두 기록의 화면 구성과 "관리자 기능은 해제만"이라는 범위를 대체한다.
+
+### 앞선 기록·기존 문서와 달라지는 점
+
+| 기존 | 최신 결정 |
+|---|---|
+| 관리자 패널 메인이 ResponseRecord 카드 | 경보가 발생한 출발지 IP를 중복 없이 한 행씩 보여주는 관리 테이블. 검색·위험도 필터·정렬·새로고침 제공 |
+| 관리자 기능은 차단 해제만 | 승인된 IP에 한해 관리자 수동 SSH 차단·재차단 추가 |
+| 04_features_data_api: 대응 실행 API 없음 | 관리자 전용(superuser 세션·CSRF) 수동 차단·해제 API만 예외로 둠. 일반 관제 화면 API는 여전히 조회 전용 |
+
+### 확정 내용
+
+- 현재 차단 상태는 피해 서버 `sudo -n ufw status`를 읽은 결과로만 판단한다. 과거 성공 기록은 이력으로만 표시한다. 상태를 읽지 못하면 변경 작업을 실행하지 않는다.
+- 버튼: 미확인 → 상태 확인, 차단 중 → 차단 해제, 과거 차단 후 현재 해제됨 → SSH 재차단, 차단 이력 없는 승인 IP → SSH 차단. 모든 변경은 IP·포트·명령을 보여주는 확인 대화상자를 거친다.
+- 수동 차단은 `ManualBlockRecord`에 관리자·IP·명령·실행 결과·UFW 전후 상태를 저장한다. 자동 대응 ResponseRecord(경보당 1건)는 다시 쓰지 않는다. 이미 차단 중이면 중복 규칙을 추가하지 않는다.
+- 해제는 기존 `events/unblock.py`를 그대로 사용하며, 수동 차단으로 만든 규칙도 해제할 수 있도록 UnblockRecord가 ManualBlockRecord를 참조할 수 있게 했다.
+- 조치 가능 IP: `RESPONSE_MANUAL_TARGETS`에 정확한 IP로 등록되고(CIDR 불가), 경보가 있는 출발지 IP이며, 문서·테스트용 대역(192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32, loopback)이 아닌 경우만. 그 외는 조회 전용. 수동 차단은 `RESPONSE_ALLOWLIST`도 적용한다.
+- 안전 스위치는 세 개이며 서로를 켜지 않는다: `RESPONSE_EXECUTE`(자동 대응, 기본 False 유지), `RESPONSE_UNBLOCK_EXECUTE`(해제), `RESPONSE_MANUAL_BLOCK_EXECUTE`(수동 차단, 신규, 기본 False).
+- 피해 서버 sudoers는 넓히지 않는다. 첫 조치 대상은 192.168.1.4 하나다.
+- 화면과 문구는 SSH(22/tcp) 차단으로만 표시하고 웹 접근 차단으로 표현하지 않는다.
+- 이번 작업에서 미니 PC에 차단·해제·상태 조회 명령을 보내지 않았다. 테스트는 fake executor만 사용했다.

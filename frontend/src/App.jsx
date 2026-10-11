@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import AdminPanel from './components/AdminPanel';
 import AlertsIncidents from './components/AlertsIncidents';
 import Dashboard from './components/Dashboard';
 import EventTable from './components/EventTable';
@@ -10,6 +11,7 @@ const TABS = [
   { key: 'events', label: '보안 이벤트', routes: ['events'] },
   { key: 'alerts', label: '경보 · 사고', routes: ['alerts', 'incidents'] },
   { key: 'response', label: '자동 대응', routes: ['response'] },
+  { key: 'admin', label: '관리자 패널', routes: ['admin'] },
 ];
 const ROUTES = TABS.flatMap((tab) => tab.routes);
 
@@ -56,6 +58,7 @@ function App() {
         {screen === 'events' && <EventTable selectedId={id} />}
         {(screen === 'alerts' || screen === 'incidents') && <AlertsIncidents mode={screen} selectedId={id} />}
         {screen === 'response' && <ResponseStatus selectedId={id} />}
+        {screen === 'admin' && <AdminPanel />}
       </main>
       <footer className="footer"><div className="footer-inner">시각은 KST(Asia/Seoul) 기준 · 데이터 출처: 관제 서버 Django API</div></footer>
     </div>

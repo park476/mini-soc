@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -155,3 +156,64 @@ class ResponseVerification(models.Model):
         else:
             self.verification_status = 'unverified'
         super().save(*args, **kwargs)
+
+
+class UnblockRecord(models.Model):
+    """Audit of one administrator-requested SSH unblock. Never edits the ResponseRecord it refers to.
+    execution_status covers only the UFW delete command; the UFW re-check and the Kali SSH reconnect
+    are separate verification items."""
+    EXECUTION_STATUSES = [
+        ('succeeded', 'succeeded'), ('failed', 'failed'), ('skipped', 'skipped'), ('unknown', 'unknown'),
+    ]
+    FAILURE_KINDS = [
+        ('', 'none'), ('not_eligible', 'not_eligible'), ('invalid_ip', 'invalid_ip'), ('config', 'config'),
+        ('ssh_error', 'ssh_error'), ('sudo_denied', 'sudo_denied'), ('timeout', 'timeout'),
+        ('command_failed', 'command_failed'), ('rule_still_present', 'rule_still_present'),
+    ]
+    UFW_RESULTS = ResponseVerification.UFW_RESULTS
+    RECONNECT_RESULTS = ResponseVerification.RECONNECT_RESULTS
+
+    # Exactly one source block: an automatic ResponseRecord or an administrator's ManualBlockRecord.
+    response = models.ForeignKey(ResponseRecord, on_delete=models.PROTECT, related_name='unblocks', null=True, blank=True)
+    manual_block = models.ForeignKey('ManualBlockRecord', on_delete=models.PROTECT, related_name='unblocks',
+                                     null=True, blank=True)
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    requested_by_username = models.CharField(max_length=150)
+    target_ip = models.GenericIPAddressField(null=True, blank=True)
+    execution_status = models.CharField(max_length=9, choices=EXECUTION_STATUSES, default='failed')
+    failure_kind = models.CharField(max_length=20, choices=FAILURE_KINDS, blank=True)
+    failure_reason = models.TextField(blank=True)
+    victim = models.TextField(blank=True)
+    command = models.TextField(blank=True)
+    execution_result = models.TextField(blank=True)
+    ufw_before_result = models.CharField(max_length=9, choices=UFW_RESULTS, default='unchecked')
+    ufw_before_evidence = models.TextField(blank=True)
+    ufw_after_result = models.CharField(max_length=9, choices=UFW_RESULTS, default='unchecked')
+    ufw_after_evidence = models.TextField(blank=True)
+    # Entered from a real observation on the Kali host; never inferred from the command result.
+    kali_ssh_reconnect_result = models.CharField(max_length=9, choices=RECONNECT_RESULTS, default='unchecked')
+    reconnect_check_evidence = models.TextField(blank=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    executed_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+
+class ManualBlockRecord(models.Model):
+    """Audit of one administrator-requested SSH (22/tcp) block or re-block of an approved IP.
+    Separate from the automatic ResponseRecord, which stays one per Alert and is never rewritten."""
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    requested_by_username = models.CharField(max_length=150)
+    target_ip = models.GenericIPAddressField(null=True, blank=True)
+    execution_status = models.CharField(max_length=9, choices=UnblockRecord.EXECUTION_STATUSES, default='failed')
+    failure_kind = models.CharField(max_length=20, blank=True)
+    failure_reason = models.TextField(blank=True)
+    victim = models.TextField(blank=True)
+    command = models.TextField(blank=True)
+    execution_result = models.TextField(blank=True)
+    ufw_before_result = models.CharField(max_length=9, choices=ResponseVerification.UFW_RESULTS, default='unchecked')
+    ufw_before_evidence = models.TextField(blank=True)
+    ufw_after_result = models.CharField(max_length=9, choices=ResponseVerification.UFW_RESULTS, default='unchecked')
+    ufw_after_evidence = models.TextField(blank=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    executed_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
