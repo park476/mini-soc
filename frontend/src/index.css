@@ -484,3 +484,4 @@ mark { background: var(--blue-tint); color: var(--blue); padding: 0 2px; }
 @media (max-width: 720px) {
   .soar-grid, .soar-ssh[open] { grid-template-columns: minmax(0, 1fr); }
 }
+.soar-timeline-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

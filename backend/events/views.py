@@ -76,18 +76,16 @@ def _web_auto_record(r):
     }
 
 
-def _web_auto_cases(records):
-    """One case per automatic block, with the matching TTL unblock of the same attack, newest first.
-    Pairs by trigger_alert and target_ip so the timeline is built only from real linked records."""
-    blocks = [r for r in records if r['operation'] == 'block']
-    unblocks = [r for r in records if r['operation'] == 'unblock']
+def _web_auto_cases(blocks, unblocks, active_pks):
+    """One case per automatic block, paired with the first later unblock of the same IP — whether that
+    unblock was PB-01's TTL (origin 'auto') or an administrator's (origin 'manual'), so the timeline
+    shows which happened. `active` is the live-record truth that the block is still in force."""
     cases = []
     for b in blocks:
-        unblock = next((u for u in unblocks if u['trigger_alert_id'] == b['trigger_alert_id']
-                        and u['target_ip'] == b['target_ip']
+        unblock = next((u for u in unblocks if u['target_ip'] == b['target_ip']
                         and (u['executed_at'] or '') >= (b['executed_at'] or '')), None)
-        cases.append({'key': f"b{b['id']}", 'target_ip': b['target_ip'],
-                      'alert': b['trigger_alert'], 'block': b, 'unblock': unblock})
+        cases.append({'key': f"b{b['id']}", 'target_ip': b['target_ip'], 'alert': b['trigger_alert'],
+                      'block': b, 'unblock': unblock, 'active': b['id'] in active_pks})
     return cases
 
 
@@ -100,6 +98,13 @@ class WebAutoStatusView(APIView):
         records = [_web_auto_record(r) for r in auto_records[:50]]
         blocks_succeeded = auto_records.filter(operation='block', execution_status='succeeded')
         latest = auto_records.exclude(executed_at=None).order_by('-executed_at').first()
+        # Build cases from automatic blocks; pair with any succeeded unblock (auto TTL or manual admin).
+        block_recs = [_web_auto_record(r) for r in auto_records.filter(operation='block')]
+        ips = [b['target_ip'] for b in block_recs]
+        unblock_recs = [_web_auto_record(r) for r in WebBlockRecord.objects.filter(
+            operation='unblock', execution_status='succeeded', target_ip__in=ips)
+            .select_related('trigger_alert').order_by('executed_at', 'id')]
+        active_pks = {b.pk for b in web_auto.active_auto_blocks()}
         return Response({
             'playbook': 'PB-01 nginx_scan 자동 웹 차단',
             # Config state only (not process liveness): the loop refreshes these from the override file.
@@ -121,7 +126,7 @@ class WebAutoStatusView(APIView):
                 'latest_at': latest.executed_at if latest else None,
             },
             'records': records,
-            'cases': _web_auto_cases(records),
+            'cases': _web_auto_cases(block_recs, unblock_recs, active_pks),
         })
 
 

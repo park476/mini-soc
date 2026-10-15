@@ -1,6 +1,29 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { formatTime, go, rowProps, ruleLabel, useApi, VERIFY } from '../api';
 import Status, { Badge, ExecutionBadge, IdLinks, VerificationBadge } from './Status';
+
+const ADMIN = '/api/admin-panel/';
+const WEB_HELPER = '/usr/local/sbin/mini-soc-webblock';
+
+function csrfToken() {
+  return document.cookie.split('; ').find((c) => c.startsWith('csrftoken='))?.slice('csrftoken='.length) ?? '';
+}
+
+// Reuses the existing admin-panel web-unblock endpoint (superuser session + CSRF); no new engine.
+async function adminWebUnblock(ip) {
+  try {
+    await fetch(`${ADMIN}session/`, { credentials: 'same-origin' }); // ensures the csrftoken cookie
+    const res = await fetch(`${ADMIN}threats/web-unblock/`, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
+      body: JSON.stringify({ ip, confirm: true }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  } catch (err) {
+    return { ok: false, status: 0, data: { detail: err instanceof Error ? err.message : String(err) } };
+  }
+}
 
 const ALLOWLIST = { excluded: '차단 제외 (허용 목록)', not_excluded: '제외 아님', unknown: '확인 불가' };
 const UFW = { present: '규칙 존재 확인', absent: '규칙 없음', unchecked: '미확인' };
@@ -10,8 +33,8 @@ const EXEC_TONE = { succeeded: 'success', skipped: 'neutral', failed: 'danger', 
 const STEP_MARK = { done: '✓', fail: '✕', skip: '–', pending: '…' };
 const STEP_TONE = { done: 'success', fail: 'danger', skip: 'neutral', pending: 'warning' };
 
-// Polls a read-only endpoint every `ms` so new alerts/records appear without a manual refresh.
-function usePolling(url, ms) {
+// Polls a read-only endpoint every `ms`; bumping `reload` forces an immediate refetch.
+function usePolling(url, ms, reload) {
   const [state, setState] = useState({ data: null, error: '', loaded: false });
   useEffect(() => {
     let alive = true;
@@ -28,8 +51,36 @@ function usePolling(url, ms) {
     };
     tick();
     return () => { alive = false; clearTimeout(timer); };
-  }, [url, ms]);
+  }, [url, ms, reload]);
   return state;
+}
+
+function UnblockDialog({ ip, onCancel, onConfirm }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const dialog = ref.current;
+    dialog.showModal();
+    return () => dialog.close();
+  }, []);
+  return (
+    <dialog ref={ref} className="admin-dialog" onCancel={onCancel} aria-labelledby="soar-unblock-title">
+      <span className="kicker">확인 필요 · 피해 서버 웹 접근 변경</span>
+      <h2 id="soar-unblock-title">웹 차단을 즉시 해제할까요?</h2>
+      <dl className="margin-facts">
+        <div><dt>대상 IP</dt><dd className="mono">{ip}</dd></div>
+        <div><dt>작업</dt><dd>Nginx 8080 차단 목록에서 이 IP의 deny 규칙 제거</dd></div>
+        <div><dt>실행 명령</dt><dd className="mono">sudo -n {WEB_HELPER} unblock {ip}</dd></div>
+      </dl>
+      <p className="note">
+        관리자(superuser) 권한으로 실행합니다. 서버가 실제 차단 상태를 다시 확인하고, 이미 해제돼 있으면 명령을 보내지 않습니다.
+        TTL 자동 해제와 구분해 관리자 수동 해제로 기록됩니다.
+      </p>
+      <div className="admin-actions">
+        <button type="button" className="btn" onClick={onCancel} autoFocus>취소</button>
+        <button type="button" className="btn btn-danger" onClick={onConfirm}>즉시 해제 실행</button>
+      </div>
+    </dialog>
+  );
 }
 
 function httpState(record) {
@@ -57,8 +108,8 @@ function caseSteps(c) {
       meta: <>차단 목록 재확인: <strong>{b.blocklist_state === 'present' ? '규칙 있음' : b.blocklist_state === 'absent' ? '규칙 없음' : '미확인'}</strong></> },
     { n: 4, title: 'HTTP 403 효과 검증', state: h403.state,
       meta: <>공격 환경(Kali) 실제 응답: <strong>{h403.text}</strong>{b.http_checked_at && <span className="sub">{formatTime(b.http_checked_at)} 관찰</span>}</> },
-    { n: 5, title: 'TTL 자동 해제', state: execState(u),
-      meta: u ? <>해제 기록 <span className="mono">#{u.id}</span> · {EXEC[u.execution_status] ?? u.execution_status} · {formatTime(u.executed_at)}<span className="sub">차단 시 만료 예정 {formatTime(b.expires_at)} · 검증을 위해 만료 시각을 앞당겨 해제함 (실제 10분 경과와 구분)</span></> : <>대기 — TTL(만료 예정 {formatTime(b.expires_at)}) 경과 후 자동 해제</> },
+    { n: 5, title: u && u.origin === 'manual' ? '관리자 수동 해제' : 'TTL 자동 해제', state: execState(u),
+      meta: u ? <>{u.origin === 'manual' ? '관리자 수동 해제' : 'TTL 자동 해제'} 기록 <span className="mono">#{u.id}</span> · {EXEC[u.execution_status] ?? u.execution_status} · {formatTime(u.executed_at)}</> : <>대기 — TTL(만료 예정 {formatTime(b.expires_at)}) 경과 후 자동 해제, 또는 관리자 즉시 해제</> },
     { n: 6, title: 'HTTP 200 복구 검증', state: h200.state,
       meta: u ? <>공격 환경(Kali) 실제 응답: <strong>{h200.text}</strong>{u.http_checked_at && <span className="sub">{formatTime(u.http_checked_at)} 관찰</span>}</> : <span className="muted">해제 후 확인 예정</span> },
   ];
@@ -83,13 +134,36 @@ function Timeline({ case: c }) {
 
 // The page's main subject: the PB-01 web auto-response that actually runs. All values come from the API.
 function WebAutoConsole() {
-  const poll = usePolling('/api/responses/web-auto/', 5000);
-  const d = poll.data;
   const [caseKey, setCaseKey] = useState(null);
+  const [pending, setPending] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [reload, setReload] = useState(0);
+  const poll = usePolling('/api/responses/web-auto/', 5000, reload);
+  const d = poll.data;
   if (!d) return <Status state={{ loading: !poll.loaded, error: poll.error, data: null }} />;
   const cases = d.cases ?? [];
   const selected = cases.find((c) => c.key === caseKey) ?? cases[0] ?? null;
   const c = d.counts;
+
+  async function runUnblock(ip) {
+    setPending(null);
+    setBusy(true);
+    const r = await adminWebUnblock(ip);
+    setBusy(false);
+    if (r.status === 401 || (r.status === 403 && !r.data.outcome)) {
+      setNotice({ tone: 'warning', text: '관리자 패널에서 superuser 로그인 후 다시 시도하세요. (서버가 권한을 재검증합니다)' });
+      return;
+    }
+    const messages = {
+      unblocked: ['success', `${ip} 웹 차단을 즉시 해제했고, 실행 후 차단 목록에서 규칙이 사라진 것을 확인했습니다. HTTP 200 복구는 공격 환경에서 별도 확인합니다.`],
+      already_unblocked: ['neutral', `${ip}은 이미 차단 목록에 없어 해제 명령을 보내지 않았습니다.`],
+    };
+    const [tone, text] = messages[r.data.outcome]
+      ?? ['danger', `${ip} 즉시 해제 실패 — ${r.data.failure_kind ? `${r.data.failure_kind}: ` : ''}${r.data.detail ?? `HTTP ${r.status}`}`];
+    setNotice({ tone, text });
+    setReload((n) => n + 1); // refresh timeline and block state now, not only on the 5s tick
+  }
 
   return (
     <section className="response-main">
@@ -109,6 +183,7 @@ function WebAutoConsole() {
       </dl>
 
       {d.overrides_error && <p className="state state-error" role="alert">설정 override 오류로 자동 차단이 꺼졌습니다: {d.overrides_error}</p>}
+      {notice && <p className={`admin-notice tone-${notice.tone}`} role="status">{notice.text}</p>}
       {poll.error && <p className="admin-notice tone-warning" role="status">실시간 갱신 오류: {poll.error} (마지막으로 받은 값 표시 중)</p>}
       <p className="note">
         트리거 <span className="mono">{d.policy.trigger_rule}</span> · 최근 {Math.round(d.policy.max_alert_age_seconds / 60)}분 경보만 ·
@@ -141,11 +216,23 @@ function WebAutoConsole() {
           )}
         </aside>
         <div className="soar-timeline">
-          <h2 className="label">대응 타임라인{selected && <span className="mono muted"> · {selected.target_ip}</span>}</h2>
+          <div className="soar-timeline-head">
+            <h2 className="label">대응 타임라인{selected && <span className="mono muted"> · {selected.target_ip}</span>}</h2>
+            {selected?.active && (
+              <button type="button" className="btn btn-small btn-danger" disabled={busy}
+                onClick={() => setPending(selected.target_ip)}>
+                {busy ? '처리 중…' : '즉시 차단 해제'}
+              </button>
+            )}
+          </div>
           <Timeline case={selected} />
-          <p className="note">각 단계는 실제 DB 기록(Alert · WebBlockRecord)에서 읽습니다. 관찰되지 않은 값은 ‘미확인’으로 표시하며 검증 성공을 임의로 만들지 않습니다.</p>
+          <p className="note">
+            각 단계는 실제 DB 기록(Alert · WebBlockRecord)에서 읽습니다. 관찰되지 않은 값은 ‘미확인’으로 표시하며 검증 성공을 임의로 만들지 않습니다.
+            {selected?.active && ' 현재 실제 차단 중인 IP만 즉시 해제할 수 있습니다.'}
+          </p>
         </div>
       </div>
+      {pending && <UnblockDialog ip={pending} onCancel={() => setPending(null)} onConfirm={() => runUnblock(pending)} />}
     </section>
   );
 }

@@ -153,6 +153,16 @@ class WebAutoPlaybookTests(TestCase):
         summary, fake, _ = self.run_with()
         self.assertEqual((summary['expire']['due'], fake.calls), (0, []))
 
+    def test_manual_unblock_stops_the_ttl_from_double_unblocking(self):
+        block = self._make_auto_block(IP_A, ttl_offset=-60)  # expired auto block
+        # An administrator unblocked it manually (origin='manual') after the block.
+        WebBlockRecord.objects.create(operation='unblock', origin='manual', requested_by=self.admin,
+            requested_by_username='root', target_ip=IP_A, execution_status='succeeded', state_after_result='absent',
+            executed_at=block.executed_at + timedelta(seconds=30))
+        self.assertEqual(active_auto_blocks(), [])  # already released
+        summary, fake, _ = self.run_with()
+        self.assertEqual((summary['expire']['due'], summary['expire']['unblocked'], fake.calls), (0, 0, []))
+
     def test_expiry_is_deferred_when_web_executor_is_off(self):
         self._make_auto_block(IP_A, ttl_offset=-60)
         with self.settings(RESPONSE_WEB_BLOCK_EXECUTE=False, RESPONSE_AUTO_WEB_EXECUTE=False):

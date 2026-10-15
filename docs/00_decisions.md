@@ -303,3 +303,15 @@ PRD와 02·03·04 설계 문서 본문은 수정하지 않았다. 이 기록이 
 - 화면: React 자동 대응 화면이 고정 "구현 완료" 대신 실제 활성 상태·실행 이력·검증 결과를 `/api/responses/web-auto/`에서 읽어 표시한다.
 - migration 0010(추가형): WebBlockRecord에 origin·trigger_alert·expires_at 추가, requested_by nullable. 기존 행과 기능은 보존한다.
 - 임의 Incident를 만들지 않으며 기존 웹 수동 차단·해제, SSH 수동 대응, UFW, DB, 네트워크 설정을 보존한다. 실제 활성화 전 사용자 승인을 받는다.
+
+## 2026-10-15 — PB-01 SOAR 화면 '즉시 차단 해제' 추가 + 실증 #7/#8 가속 검증 이력
+
+근거: 사용자의 최신 지시(시연용 최소 수정). 기존 기능·데이터·프로세스를 보존하고 버튼과 상태 표시만 추가한다.
+
+- 자동 대응 화면(ResponseStatus)의 사례 타임라인에 **현재 실제 차단 중인 자동 차단 IP에만** '즉시 차단 해제' 버튼을 추가했다. 신규 해제 엔진을 만들지 않고 기존 관리자 패널 API `/api/admin-panel/threats/web-unblock/`(superuser 세션·CSRF·POST, `web_block.web_action` 재사용)를 그대로 호출한다. 서버가 권한·CSRF·실제 차단 상태·대상 IP를 재검증한다.
+- 관리자 수동 해제는 WebBlockRecord `origin='manual'`, TTL 자동 해제는 `origin='auto'`로 DB에서 구분된다. 타임라인 ⑤단계도 이 origin으로 "관리자 수동 해제/TTL 자동 해제"를 구분 표시한다.
+- 수동 해제로 released된 자동 차단은 `active_auto_blocks()`에서 제외되어, 이후 TTL이 도래해도 중복 해제하지 않는다(테스트로 확인).
+- 읽기 전용 API cases에 `active`(현재 차단 유지 여부)와 모든 origin의 해제 기록 매칭을 추가했다. 성공 시 5초 폴링을 즉시 1회 당겨 갱신한다. 실패는 성공으로 표시하지 않고 원인(failure_kind·detail)을 출력한다.
+- 타임라인에서 고정 문구 "만료 시각을 앞당겨 해제함"은 제거했다. 모든 시연에 해당하지 않기 때문이다.
+- **실증 #7/#8 가속 검증 이력(별도 보관):** 2026-10-15 최초 PB-01 실증에서 자동 차단 WebBlockRecord #7(Alert #26, 118.235.69.25, HTTP 403 success)의 TTL 만료 예정 시각(10:11:00)을 검증 편의를 위해 앞당겨 자동 해제 #8(HTTP 200 success)을 수행했다. 이는 일반적인 10분 TTL 경과가 아니라 당시 1회 가속 검증이며, 이후 시연의 기본 동작은 설정된 TTL(기본 10분) 경과 해제다.
+- 실제 IP 해제 명령은 이번 작업에서 실행하지 않았다(코드·테스트·빌드만). 미니 PC·UFW·Nginx·Docker·분석 프로세스·자동 차단 스위치는 변경하지 않았다.
