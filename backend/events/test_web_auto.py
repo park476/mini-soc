@@ -173,3 +173,40 @@ class WebAutoPlaybookTests(TestCase):
         self.scan(IP_A)
         self.run_with(out(stdout=OPEN), out(stdout='blocked\n'), out(stdout=listed(IP_A)))
         self.assertEqual((ResponseRecord.objects.count(), ManualBlockRecord.objects.count()), (0, 0))
+
+
+@override_settings(**AUTO_ON)
+@mock.patch('events.response.subprocess.run', no_real_subprocess)
+class WebAutoApiShapeTests(TestCase):
+    """The read-only /api/responses/web-auto/ contract the SOAR console renders."""
+
+    def test_counts_and_cases_pair_block_with_its_ttl_unblock(self):
+        from django.test import Client
+        a = alert('nginx_scan', ip=IP_A)
+        block = WebBlockRecord.objects.create(
+            operation='block', origin='auto', trigger_alert=a, requested_by_username='auto', target_ip=IP_A,
+            execution_status='succeeded', state_after_result='present', http_check_status=403, http_check_result='success',
+            executed_at=timezone.now() - timedelta(seconds=600), expires_at=timezone.now() - timedelta(seconds=1))
+        unblock = WebBlockRecord.objects.create(
+            operation='unblock', origin='auto', trigger_alert=a, requested_by_username='auto', target_ip=IP_A,
+            execution_status='succeeded', state_after_result='absent', http_check_status=200, http_check_result='success',
+            executed_at=timezone.now())
+        d = Client(HTTP_HOST='localhost').get('/api/responses/web-auto/').json()
+        self.assertEqual((d['enabled'], d['counts']['blocks_succeeded'], d['counts']['http_verified'],
+                          d['counts']['unblocks_succeeded'], d['counts']['active']), (True, 1, 1, 1, 0))
+        self.assertEqual(len(d['cases']), 1)
+        c = d['cases'][0]
+        self.assertEqual((c['target_ip'], c['alert']['id'], c['block']['id'], c['unblock']['id']),
+                         (IP_A, a.pk, block.pk, unblock.pk))
+        self.assertEqual((c['block']['http_check_result'], c['unblock']['http_check_status']), ('success', 200))
+
+    def test_block_still_active_has_no_unblock_in_its_case(self):
+        from django.test import Client
+        a = alert('nginx_scan', ip=IP_B)
+        WebBlockRecord.objects.create(operation='block', origin='auto', trigger_alert=a, requested_by_username='auto',
+            target_ip=IP_B, execution_status='succeeded', state_after_result='present',
+            executed_at=timezone.now(), expires_at=timezone.now() + timedelta(seconds=600))
+        d = Client(HTTP_HOST='localhost').get('/api/responses/web-auto/').json()
+        c = next(c for c in d['cases'] if c['target_ip'] == IP_B)
+        self.assertIsNone(c['unblock'])
+        self.assertEqual((d['counts']['active'], c['block']['http_check_status']), (1, None))

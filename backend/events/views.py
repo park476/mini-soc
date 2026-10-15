@@ -60,26 +60,49 @@ class ResponseDetailView(RetrieveAPIView):
 
 
 def _web_auto_record(r):
+    alert = r.trigger_alert
     return {
-        'id': r.pk, 'operation': r.operation, 'target_ip': r.target_ip,
-        'trigger_alert_id': r.trigger_alert_id, 'execution_status': r.execution_status,
-        'failure_kind': r.failure_kind, 'failure_reason': r.failure_reason,
-        'executed_at': r.executed_at, 'expires_at': r.expires_at,
+        'id': r.pk, 'operation': r.operation, 'target_ip': r.target_ip, 'origin': r.origin,
+        'trigger_alert_id': r.trigger_alert_id,
+        'trigger_alert': ({'id': alert.pk, 'rule_type': alert.rule_type, 'source_ip': alert.source_ip,
+                           'occurred_at': alert.occurred_at} if alert else None),
+        'execution_status': r.execution_status, 'failure_kind': r.failure_kind, 'failure_reason': r.failure_reason,
+        'requested_at': r.requested_at, 'executed_at': r.executed_at, 'expires_at': r.expires_at,
         # Three separate verification facts: the command result (execution_status), the blocklist
         # re-read (state_after_result), and the attacker's real HTTP status (http_check_*).
         'blocklist_state': r.state_after_result,
         'http_check_status': r.http_check_status, 'http_check_result': r.http_check_result,
+        'http_checked_at': r.http_checked_at,
     }
+
+
+def _web_auto_cases(records):
+    """One case per automatic block, with the matching TTL unblock of the same attack, newest first.
+    Pairs by trigger_alert and target_ip so the timeline is built only from real linked records."""
+    blocks = [r for r in records if r['operation'] == 'block']
+    unblocks = [r for r in records if r['operation'] == 'unblock']
+    cases = []
+    for b in blocks:
+        unblock = next((u for u in unblocks if u['trigger_alert_id'] == b['trigger_alert_id']
+                        and u['target_ip'] == b['target_ip']
+                        and (u['executed_at'] or '') >= (b['executed_at'] or '')), None)
+        cases.append({'key': f"b{b['id']}", 'target_ip': b['target_ip'],
+                      'alert': b['trigger_alert'], 'block': b, 'unblock': unblock})
+    return cases
 
 
 class WebAutoStatusView(APIView):
     """Read-only PB-01 status: the real switch state and stored records, never a fixed 'done' claim."""
 
     def get(self, request):
-        auto_records = WebBlockRecord.objects.filter(origin='auto').order_by('-id')
+        auto_records = (WebBlockRecord.objects.filter(origin='auto')
+                        .select_related('trigger_alert').order_by('-id'))
+        records = [_web_auto_record(r) for r in auto_records[:50]]
+        blocks_succeeded = auto_records.filter(operation='block', execution_status='succeeded')
+        latest = auto_records.exclude(executed_at=None).order_by('-executed_at').first()
         return Response({
             'playbook': 'PB-01 nginx_scan 자동 웹 차단',
-            # The background loop refreshes these from the override file each cycle; shown as last read here.
+            # Config state only (not process liveness): the loop refreshes these from the override file.
             'enabled': getattr(settings, web_auto.AUTO_EXECUTE_SETTING, False) is True,
             'web_block_enabled': getattr(settings, 'RESPONSE_WEB_BLOCK_EXECUTE', False) is True,
             'overrides_error': getattr(settings, 'RESPONSE_OVERRIDES_ERROR', ''),
@@ -91,11 +114,14 @@ class WebAutoStatusView(APIView):
             },
             'counts': {
                 'total': auto_records.count(),
-                'blocks_succeeded': auto_records.filter(operation='block', execution_status='succeeded').count(),
+                'blocks_succeeded': blocks_succeeded.count(),
                 'http_verified': auto_records.filter(operation='block', http_check_result='success').count(),
+                'unblocks_succeeded': auto_records.filter(operation='unblock', execution_status='succeeded').count(),
                 'active': len(web_auto.active_auto_blocks()),
+                'latest_at': latest.executed_at if latest else None,
             },
-            'records': [_web_auto_record(r) for r in auto_records[:50]],
+            'records': records,
+            'cases': _web_auto_cases(records),
         })
 
 

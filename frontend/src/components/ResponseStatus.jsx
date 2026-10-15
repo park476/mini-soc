@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { formatTime, go, rowProps, ruleLabel, useApi, VERIFY } from '../api';
 import Status, { Badge, ExecutionBadge, IdLinks, VerificationBadge } from './Status';
 
@@ -7,69 +7,153 @@ const UFW = { present: '규칙 존재 확인', absent: '규칙 없음', unchecke
 const RECONNECT = { failed: '접속 실패 확인', succeeded: '접속 성공 (차단 안 됨)', unchecked: '미확인' };
 const EXEC = { succeeded: '성공', skipped: '미실행', failed: '실패', unknown: '확인 불가' };
 const EXEC_TONE = { succeeded: 'success', skipped: 'neutral', failed: 'danger', unknown: 'warning' };
-const BLOCKLIST = { present: '차단 목록에 있음', absent: '없음', unchecked: '미확인' };
-const HTTP = { success: '검증 성공', failed: '검증 실패', unchecked: '미확인' };
+const STEP_MARK = { done: '✓', fail: '✕', skip: '–', pending: '…' };
+const STEP_TONE = { done: 'success', fail: 'danger', skip: 'neutral', pending: 'warning' };
 
-// PB-01 automatic web-block status, from real stored records — never a fixed "done" claim.
-function WebAutoPanel() {
-  const status = useApi('/api/responses/web-auto/');
-  const d = status.data;
-  if (!d) return <section className="criteria"><Status state={status} /></section>;
-  const p = d.policy;
+// Polls a read-only endpoint every `ms` so new alerts/records appear without a manual refresh.
+function usePolling(url, ms) {
+  const [state, setState] = useState({ data: null, error: '', loaded: false });
+  useEffect(() => {
+    let alive = true;
+    let timer;
+    const tick = async () => {
+      try {
+        const res = await fetch(url, { credentials: 'same-origin' });
+        const data = await res.json().catch(() => null);
+        if (alive) setState({ data, error: res.ok ? '' : `HTTP ${res.status}`, loaded: true });
+      } catch (err) {
+        if (alive) setState((s) => ({ ...s, error: err instanceof Error ? err.message : String(err), loaded: true }));
+      }
+      if (alive) timer = setTimeout(tick, ms);
+    };
+    tick();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [url, ms]);
+  return state;
+}
+
+function httpState(record) {
+  // '미확인' until a real HTTP status was observed and recorded (record_web_check).
+  if (!record || record.http_check_status == null) return { state: 'pending', text: '미확인' };
+  return { state: record.http_check_result === 'success' ? 'done' : 'fail',
+    text: `HTTP ${record.http_check_status} · ${record.http_check_result === 'success' ? '검증 성공' : '검증 실패'}` };
+}
+
+function caseSteps(c) {
+  const a = c.alert;
+  const b = c.block;
+  const u = c.unblock;
+  const execState = (r) => (!r ? 'pending' : r.execution_status === 'succeeded' ? 'done'
+    : r.execution_status === 'skipped' ? 'skip' : r.execution_status === 'unknown' ? 'pending' : 'fail');
+  const blockState = b.blocklist_state === 'present' ? 'done' : b.blocklist_state === 'absent' ? 'fail' : 'pending';
+  const h403 = httpState(b);
+  const h200 = httpState(u);
+  return [
+    { n: 1, title: 'nginx_scan 경보 발생', state: a ? 'done' : 'pending',
+      meta: a ? <>경보 <IdLinks ids={[a.id]} screen="alerts" prefix="#" /> · <span className="mono">{a.source_ip}</span> · {formatTime(a.occurred_at)}</> : '경보 기록 없음' },
+    { n: 2, title: 'PB-01 자동 실행', state: execState(b),
+      meta: <>차단 기록 <span className="mono">#{b.id}</span> · {EXEC[b.execution_status] ?? b.execution_status} · {formatTime(b.executed_at)}</> },
+    { n: 3, title: 'Nginx IP 차단', state: blockState,
+      meta: <>차단 목록 재확인: <strong>{b.blocklist_state === 'present' ? '규칙 있음' : b.blocklist_state === 'absent' ? '규칙 없음' : '미확인'}</strong></> },
+    { n: 4, title: 'HTTP 403 효과 검증', state: h403.state,
+      meta: <>공격 환경(Kali) 실제 응답: <strong>{h403.text}</strong>{b.http_checked_at && <span className="sub">{formatTime(b.http_checked_at)} 관찰</span>}</> },
+    { n: 5, title: 'TTL 자동 해제', state: execState(u),
+      meta: u ? <>해제 기록 <span className="mono">#{u.id}</span> · {EXEC[u.execution_status] ?? u.execution_status} · {formatTime(u.executed_at)}<span className="sub">차단 시 만료 예정 {formatTime(b.expires_at)} · 검증을 위해 만료 시각을 앞당겨 해제함 (실제 10분 경과와 구분)</span></> : <>대기 — TTL(만료 예정 {formatTime(b.expires_at)}) 경과 후 자동 해제</> },
+    { n: 6, title: 'HTTP 200 복구 검증', state: h200.state,
+      meta: u ? <>공격 환경(Kali) 실제 응답: <strong>{h200.text}</strong>{u.http_checked_at && <span className="sub">{formatTime(u.http_checked_at)} 관찰</span>}</> : <span className="muted">해제 후 확인 예정</span> },
+  ];
+}
+
+function Timeline({ case: c }) {
+  if (!c) return <div className="state">자동 대응 사례를 선택하세요.</div>;
   return (
-    <section className="criteria" aria-labelledby="pb01-title">
-      <div className="criteria-head">
-        <h2 id="pb01-title" className="kicker">SOAR PLAYBOOK · PB-01 Nginx 스캔 자동 웹 차단</h2>
-        <p>
-          관리자 버튼 없이 분석 루프가 실행합니다. 활성 상태와 실행 이력은 저장된 기록에서 읽습니다.
-          실행 성공·차단 목록 확인·실제 HTTP 403은 서로 다른 검증 단계입니다.
-        </p>
-      </div>
-      <dl className="status-rows">
-        <div><dt>자동 차단 (PB-01)</dt><dd className={d.enabled ? 'tone-success' : 'tone-warning'}>{d.enabled ? '활성' : '비활성'}</dd></div>
-        <div><dt>자동 해제 (TTL)</dt><dd className={d.web_block_enabled ? 'tone-success' : 'tone-warning'}>{d.web_block_enabled ? `동작 (${Math.round(p.ttl_seconds / 60)}분 후)` : '대기 (수동 해제 필요)'}</dd></div>
-        <div><dt>현재 자동 차단 중</dt><dd className={d.counts.active ? 'tone-danger' : undefined}>{d.counts.active}</dd></div>
-        <div><dt>HTTP 403 검증</dt><dd className={d.counts.http_verified ? 'tone-success' : 'tone-warning'}>{d.counts.http_verified}건</dd></div>
-      </dl>
-      {d.overrides_error && <p className="state state-error" role="alert">설정 override 오류로 자동 차단이 꺼졌습니다: {d.overrides_error}</p>}
-      <p className="note">
-        트리거 <span className="mono">{p.trigger_rule}</span> · 최근 {Math.round(p.max_alert_age_seconds / 60)}분 경보만 ·
-        시간당 최대 {p.hourly_limit}건 · 보호 목록·관제 서버 주소 제외. 과거 경보를 일괄 차단하지 않습니다.
+    <ol className="soar-steps">
+      {caseSteps(c).map((s) => (
+        <li key={s.n} className="soar-step">
+          <span className={`soar-dot tone-${STEP_TONE[s.state]}`} aria-hidden="true">{STEP_MARK[s.state]}</span>
+          <div className="soar-step-body">
+            <strong>{s.n} · {s.title}</strong>
+            <span className="soar-step-meta">{s.meta}</span>
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+// The page's main subject: the PB-01 web auto-response that actually runs. All values come from the API.
+function WebAutoConsole() {
+  const poll = usePolling('/api/responses/web-auto/', 5000);
+  const d = poll.data;
+  const [caseKey, setCaseKey] = useState(null);
+  if (!d) return <Status state={{ loading: !poll.loaded, error: poll.error, data: null }} />;
+  const cases = d.cases ?? [];
+  const selected = cases.find((c) => c.key === caseKey) ?? cases[0] ?? null;
+  const c = d.counts;
+
+  return (
+    <section className="response-main">
+      <h1 className="screen-title">SOAR 자동 대응 현황</h1>
+      <p className="screen-note">
+        PB-01 Nginx 스캔 자동 웹 차단의 실제 실행 기록과 효과 검증입니다. 관리자 버튼 없이 분석 루프가 실행하며,
+        5초마다 자동 갱신됩니다. 모든 수치는 저장된 기록에서 읽습니다.
       </p>
-      {d.records.length === 0 ? (
-        <div className="state">자동 대응 실행 기록 없음</div>
-      ) : (
-        <div className="admin-table">
-          <table className="log">
-            <thead>
-              <tr><th>시각</th><th>작업</th><th>대상 IP</th><th>1 · 실행</th><th>2 · 차단 목록</th><th>3 · HTTP(Kali)</th><th>TTL 만료</th><th>비고</th></tr>
-            </thead>
-            <tbody>
-              {d.records.map((r) => (
-                <tr key={r.id}>
-                  <td className="mono">{formatTime(r.executed_at)}</td>
-                  <td>{r.operation === 'block' ? '웹 차단' : '웹 차단 해제'} <span className="mono muted">#{r.id}</span></td>
-                  <td className="mono">{r.target_ip ?? '-'}</td>
-                  <td><Badge tone={EXEC_TONE[r.execution_status] ?? 'neutral'}>{EXEC[r.execution_status] ?? r.execution_status}</Badge></td>
-                  <td>{BLOCKLIST[r.blocklist_state] ?? r.blocklist_state}</td>
-                  <td>{r.http_check_status != null ? <><span className="mono">{r.http_check_status}</span> · {HTTP[r.http_check_result] ?? r.http_check_result}</> : <span className="muted">미확인</span>}</td>
-                  <td className="mono">{r.operation === 'block' ? formatTime(r.expires_at) : '-'}</td>
-                  <td>{r.failure_kind ? `${r.failure_kind}: ` : ''}{r.failure_reason}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+
+      <dl className="admin-stats">
+        <div><dt>PB-01 상태</dt><dd className={d.enabled ? 'tone-success' : 'tone-warning'}>{d.enabled ? '설정 활성' : '설정 비활성'}</dd><span className="sub">설정 기준 (프로세스 상태 아님)</span></div>
+        <div><dt>자동 차단 성공</dt><dd>{c.blocks_succeeded}</dd><span className="sub">실행 성공 기록</span></div>
+        <div><dt>HTTP 403 검증</dt><dd className={c.http_verified ? 'tone-success' : undefined}>{c.http_verified}</dd><span className="sub">실제 차단 효과 확인</span></div>
+        <div><dt>현재 차단 중 IP</dt><dd className={c.active ? 'tone-danger' : undefined}>{c.active}</dd><span className="sub">자동 차단 활성</span></div>
+        <div><dt>자동 해제 성공</dt><dd>{c.unblocks_succeeded}</dd><span className="sub">TTL 복구</span></div>
+        <div><dt>최신 자동 대응</dt><dd className="mono" style={{ fontSize: '18px' }}>{c.latest_at ? formatTime(c.latest_at) : '—'}</dd><span className="sub">마지막 실행 시각</span></div>
+      </dl>
+
+      {d.overrides_error && <p className="state state-error" role="alert">설정 override 오류로 자동 차단이 꺼졌습니다: {d.overrides_error}</p>}
+      {poll.error && <p className="admin-notice tone-warning" role="status">실시간 갱신 오류: {poll.error} (마지막으로 받은 값 표시 중)</p>}
+      <p className="note">
+        트리거 <span className="mono">{d.policy.trigger_rule}</span> · 최근 {Math.round(d.policy.max_alert_age_seconds / 60)}분 경보만 ·
+        시간당 최대 {d.policy.hourly_limit}건 · 자동 해제 TTL {Math.round(d.policy.ttl_seconds / 60)}분 ·
+        자동 해제(TTL)는 {d.web_block_enabled ? '동작' : '대기 (수동 해제 필요)'}. 보호 목록·관제 서버 주소 제외, 과거 경보 일괄 차단 안 함.
+      </p>
+
+      <div className="soar-grid">
+        <aside className="soar-cases">
+          <h2 className="label">자동 대응 사례</h2>
+          {cases.length === 0 ? (
+            <div className="state">아직 자동 대응 기록이 없습니다. nginx_scan 경보가 발생하면 여기에 나타납니다.</div>
+          ) : (
+            <ol className="index">
+              {cases.map((cc) => {
+                const verified = cc.block.http_check_result === 'success';
+                return (
+                  <li key={cc.key} {...rowProps(() => setCaseKey(cc.key), (selected && cc.key === selected.key))}>
+                    <span className="index-title"><span className="mono">{cc.target_ip}</span></span>
+                    <span className="index-meta">
+                      <Badge tone={EXEC_TONE[cc.block.execution_status] ?? 'neutral'}>{EXEC[cc.block.execution_status] ?? cc.block.execution_status}</Badge>
+                      {verified && <Badge tone="success">403 검증</Badge>}
+                      {cc.unblock && <Badge tone="neutral">해제됨</Badge>}
+                    </span>
+                    <span className="index-meta mono">차단 #{cc.block.id} · {formatTime(cc.block.executed_at)}{cc.alert && ` · 경보 #${cc.alert.id}`}</span>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </aside>
+        <div className="soar-timeline">
+          <h2 className="label">대응 타임라인{selected && <span className="mono muted"> · {selected.target_ip}</span>}</h2>
+          <Timeline case={selected} />
+          <p className="note">각 단계는 실제 DB 기록(Alert · WebBlockRecord)에서 읽습니다. 관찰되지 않은 값은 ‘미확인’으로 표시하며 검증 성공을 임의로 만들지 않습니다.</p>
         </div>
-      )}
-      <p className="note">HTTP 403/200 확인은 공격 환경에서 실제로 관찰한 뒤 <span className="mono">record_web_check</span>로 입력한 값입니다.</p>
+      </div>
     </section>
   );
 }
 
-// Designed response path across the three machines (docs 05 §4). Not an execution record.
+// Designed SSH response path (docs 05 §4). Not an execution record; SSH auto-response has 0 records.
 function Architecture() {
   return (
-    <div className="arch" role="img" aria-label="자동 대응 설계 경로: 관제 서버에서 SSH로 피해 Ubuntu의 UFW를 제어하고, 피해 Ubuntu와 공격자 Kali에서 효과를 검증">
+    <div className="arch" role="img" aria-label="SSH 자동 대응 설계 경로: 관제 서버에서 SSH로 피해 Ubuntu의 UFW를 제어하고, 피해 Ubuntu와 공격자 Kali에서 효과를 검증">
       <div className="zone zone-monitor"><span className="zone-name">관제 서버</span></div>
       <div className="zone zone-victim"><span className="zone-name">피해 Ubuntu</span></div>
       <div className="zone zone-kali"><span className="zone-name">공격자 Kali</span></div>
@@ -154,7 +238,8 @@ function ResponseDetail({ id }) {
   );
 }
 
-export default function ResponseStatus({ selectedId }) {
+// SSH automatic response: a designed path with 0 execution records. Kept, but moved out of the way.
+function SshAutoResponse({ selectedId }) {
   const responses = useApi('/api/responses/');
   const list = responses.data ?? [];
   const verified = list.some((r) => r.verification?.success);
@@ -162,10 +247,14 @@ export default function ResponseStatus({ selectedId }) {
   const count = responses.data ? list.length : responses.error ? '—' : '…';
 
   return (
-    <div className="response">
+    <details className="soar-ssh">
+      <summary>
+        SSH 자동 대응 상세 (설계 경로)
+        <span className="sub">실행 기록 {count}{responses.data ? '건' : ''} · {verified ? '효과 검증 있음' : '미검증'}</span>
+      </summary>
+
       <section className="response-main">
-        <h1 className="screen-title">자동 대응 경로</h1>
-        <p className="screen-note">SSH 무차별 대입 경보 한 건이 세 장비를 거쳐 차단과 검증으로 이어지는 설계 경로입니다. 실행 기록이 아닙니다.</p>
+        <p className="screen-note">SSH 무차별 대입 경보 한 건이 세 장비를 거쳐 차단과 검증으로 이어지는 설계 경로입니다. 아래는 실행 기록이 아니라 개념도이며, 현재 SSH 자동 대응 실행 기록은 {count}건입니다.</p>
         <Architecture />
       </section>
 
@@ -178,10 +267,10 @@ export default function ResponseStatus({ selectedId }) {
 
         {empty ? (
           <div className="rail-text">
-            <h2>아직 실제 자동 대응 실행 기록 없음</h2>
+            <h2>아직 실제 SSH 자동 대응 실행 기록 없음</h2>
             <p>
-              피해 Ubuntu 실장비 검증 전입니다. 자동 분석 루프는 RESPONSE_EXECUTE가 활성화된 경우에만 대응을 실행하므로
-              현재는 대응 기록이 생성되지 않았습니다. 모의 결과는 표시하지 않습니다.
+              자동 분석 루프는 RESPONSE_EXECUTE가 활성화된 경우에만 SSH 대응을 실행합니다. 현재 SSH 경로는 외부 핫스팟에서
+              피해 서버 22번에 직접 닿지 못해 실행 기록이 없습니다. 모의 결과는 표시하지 않습니다.
             </p>
           </div>
         ) : (
@@ -199,35 +288,15 @@ export default function ResponseStatus({ selectedId }) {
           </Status>
         )}
       </aside>
+    </details>
+  );
+}
 
-      <section className="criteria" aria-labelledby="criteria-title">
-        <div className="criteria-head">
-          <h2 id="criteria-title" className="kicker">EFFECT VERIFICATION · 효과 검증 기준</h2>
-          <p><strong>실행 성공 ≠ 효과 검증 성공</strong> — UFW 명령이 성공해도 아래 두 조건이 모두 확인되기 전에는 검증 성공이 아닙니다.</p>
-        </div>
-        <div className="criteria-eq">
-          <div className="criterion">
-            <span className="criterion-where">피해 Ubuntu</span>
-            <strong>UFW에 대상 IP 차단 규칙 존재</strong>
-            <span className="mono">ufw status · 22/tcp DENY &lt;공격 IP&gt;</span>
-          </div>
-          <span className="criteria-op">AND</span>
-          <div className="criterion">
-            <span className="criterion-where">공격자 Kali</span>
-            <strong>동일 환경의 SSH 재접속 실패</strong>
-            <span>실제 재접속 결과를 관찰해 기록</span>
-          </div>
-          <span className="criteria-op">=</span>
-          <div className={`criteria-result ${verified ? 'is-verified' : 'is-pending'}`}>
-            <span className="criterion-where">현재 상태</span>
-            <strong>{verified ? 'VERIFIED' : 'PENDING'}</strong>
-            <span>{verified ? '검증 성공 기록 있음' : '검증 기록 없음 · 실장비 검증 대기'}</span>
-          </div>
-        </div>
-        <p className="note">둘 중 하나라도 반대 결과가 확인되면 검증 실패, 확인되지 않은 조건이 있으면 미검증으로 기록합니다.</p>
-      </section>
-
-      <WebAutoPanel />
+export default function ResponseStatus({ selectedId }) {
+  return (
+    <div className="response">
+      <WebAutoConsole />
+      <SshAutoResponse selectedId={selectedId} />
     </div>
   );
 }

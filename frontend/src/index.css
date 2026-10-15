@@ -463,3 +463,24 @@ mark { background: var(--blue-tint); color: var(--blue); padding: 0 2px; }
 .row-fixture strong { font-weight: 600; }
 @media (max-width: 720px) { .admin-stats { grid-template-columns: minmax(0, 1fr); } .admin-toolbar-end { margin-left: 0; } }
 .admin-table .log td:last-child { white-space: normal; min-width: 150px; }
+
+/* 자동 대응 화면 · SOAR 관제 (PB-01 중심 재구성) */
+.response > .response-main, .response > .soar-ssh { grid-column: 1 / -1; }
+.response .admin-stats { margin-top: 20px; }
+.soar-grid { display: grid; grid-template-columns: 340px minmax(0, 1fr); column-gap: 48px; row-gap: 24px; margin-top: 28px; align-items: start; }
+.soar-cases .index, .soar-timeline .soar-steps { margin-top: 12px; }
+.soar-steps { border-top: 2px solid var(--ink); }
+.soar-step { display: flex; gap: 14px; padding: 14px 2px; border-bottom: 1px solid var(--rule); align-items: flex-start; }
+.soar-dot { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 13px; border: 2px solid currentColor; margin-top: 1px; }
+.soar-step-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.soar-step-body > strong { font-size: 15.5px; letter-spacing: -0.2px; }
+.soar-step-meta { font-size: 13.5px; color: var(--ink-2); display: flex; flex-direction: column; gap: 2px; }
+.soar-step-meta strong { color: var(--ink); }
+.soar-ssh { grid-column: 1 / -1; border-top: 2px solid var(--ink); padding-top: 4px; }
+.soar-ssh > summary { cursor: pointer; font-weight: 800; font-size: 16px; padding: 12px 0; display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+.soar-ssh > summary .sub { font-weight: 400; color: var(--ink-3); }
+.soar-ssh[open] { display: grid; grid-template-columns: minmax(0, 1fr) 360px; column-gap: 64px; row-gap: 0; align-items: start; }
+.soar-ssh[open] > summary { grid-column: 1 / -1; }
+@media (max-width: 720px) {
+  .soar-grid, .soar-ssh[open] { grid-template-columns: minmax(0, 1fr); }
+}
