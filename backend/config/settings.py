@@ -178,4 +178,6 @@ RESPONSE_AUTO_WEB_TTL = int(os.environ.get('RESPONSE_AUTO_WEB_TTL', '600'))
 # A broken file turns every block switch off (config/response_overrides.py).
 from . import response_overrides  # noqa: E402
 RESPONSE_OVERRIDES_FILE = BASE_DIR / '.response-overrides.env'
+# run_analysis re-reads the override file each cycle; tests set this False to protect override_settings.
+RESPONSE_OVERRIDES_REFRESH = True
 response_overrides.apply(globals(), RESPONSE_OVERRIDES_FILE)

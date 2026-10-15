@@ -311,3 +311,25 @@ class ResponseOverrideTests(SimpleTestCase):
                              [False] * len(response_overrides.BLOCK_SWITCHES), text)
             self.assertTrue(ns['RESPONSE_UNBLOCK_EXECUTE'])
             self.assertEqual(ns['RESPONSE_ALLOWLIST'], '')
+
+
+class ResponseRefreshTests(TestCase):
+    """refresh() re-reads the file onto live settings and reverts a removed key to its env default,
+    so toggling RESPONSE_AUTO_WEB_EXECUTE off (by removing or setting the line) really takes effect."""
+
+    def test_removing_a_key_reverts_it_to_the_env_default(self):
+        import os
+        from config import response_overrides
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / '.response-overrides.env'
+            path.write_text('RESPONSE_AUTO_WEB_EXECUTE=true\n', encoding='utf-8')
+            with override_settings(RESPONSE_OVERRIDES_FILE=str(path), RESPONSE_OVERRIDES_REFRESH=True,
+                                   RESPONSE_AUTO_WEB_EXECUTE=False):
+                with mock.patch.dict(os.environ, {'RESPONSE_AUTO_WEB_EXECUTE': ''}, clear=False):
+                    response_overrides.refresh()
+                    from django.conf import settings
+                    self.assertTrue(settings.RESPONSE_AUTO_WEB_EXECUTE)  # file turned it on
+                    # Operator removes the line to disable -> next refresh reverts to the env default (off).
+                    path.write_text('# disabled\n', encoding='utf-8')
+                    response_overrides.refresh()
+                    self.assertFalse(settings.RESPONSE_AUTO_WEB_EXECUTE)

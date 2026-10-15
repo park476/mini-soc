@@ -19,6 +19,7 @@ SAFE_SETTINGS = dict(
     RESPONSE_VICTIM_USER='', RESPONSE_VICTIM_SSH_PORT='22', RESPONSE_SSH_KEY_PATH='',
     # The live override file must never be re-read into settings during tests (PB-01 refresh()).
     RESPONSE_OVERRIDES_FILE='/nonexistent/mini-soc-test.env', RESPONSE_OVERRIDES_ERROR='',
+    RESPONSE_OVERRIDES_REFRESH=False,
 )
 
 

@@ -164,7 +164,7 @@ class WebAutoPlaybookTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bad = Path(tmp) / '.response-overrides.env'
             bad.write_text('this is not a valid line\n', encoding='utf-8')
-            with self.settings(RESPONSE_OVERRIDES_FILE=str(bad)):
+            with self.settings(RESPONSE_OVERRIDES_FILE=str(bad), RESPONSE_OVERRIDES_REFRESH=True):
                 summary, fake, _ = self.run_with()
         # refresh() turns every block switch (incl. the auto switch) off, so the block phase never runs.
         self.assertEqual((summary['block'], fake.calls, WebBlockRecord.objects.count()), ({'enabled': False}, [], 0))

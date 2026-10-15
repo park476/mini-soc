@@ -6,6 +6,7 @@ config/settings.py so runserver reloads. Only ALLOWED_KEYS are read: no password
 Any other key, a malformed line or an unreadable file is an error, and every block switch is then
 turned off so no block command can be sent. Unblocking is left as it was.
 """
+import os
 from pathlib import Path
 
 ALLOWED_KEYS = ('RESPONSE_ALLOWLIST', 'RESPONSE_WEB_BLOCK_EXECUTE', 'RESPONSE_WEB_PRIVATE_RANGES',
@@ -60,12 +61,25 @@ def apply(namespace, path):
     namespace.update(values)
 
 
+def _env_baseline():
+    """The managed keys as the container's environment (.env) defines them, parsed like settings.py."""
+    base = {}
+    for key in ALLOWED_KEYS:
+        raw = os.environ.get(key, '')
+        base[key] = (raw.strip().lower() == 'true') if key in BOOLEAN_KEYS else raw
+    return base
+
+
 def refresh():
     """Re-read the override file onto the live Django settings. The long-lived run_analysis process
-    uses this each cycle so the auto-response switch can be toggled without restarting it. A broken
-    file turns every block switch off, exactly like startup. Keys absent from the file keep their
-    current value, so the demo keeps every managed key present in the file."""
+    uses this each cycle so a switch can be toggled without restarting it. Each managed key is first
+    reset to its environment baseline and then the file is applied, so removing a key's line (or the
+    whole file) reverts that key to its .env default (every *_EXECUTE default is off) instead of
+    leaving a stale True. A broken file turns every block switch off, exactly like startup.
+    Disabled in tests via RESPONSE_OVERRIDES_REFRESH=False so it never clobbers override_settings."""
     from django.conf import settings
+    if not getattr(settings, 'RESPONSE_OVERRIDES_REFRESH', True):
+        return
     path = getattr(settings, 'RESPONSE_OVERRIDES_FILE', None)
     if not path:
         return
@@ -77,5 +91,7 @@ def refresh():
         settings.RESPONSE_OVERRIDES_ERROR = str(exc)
         return
     settings.RESPONSE_OVERRIDES_ERROR = ''
-    for key, value in values.items():
+    baseline = _env_baseline()
+    baseline.update(values)
+    for key, value in baseline.items():
         setattr(settings, key, value)
