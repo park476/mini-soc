@@ -81,3 +81,81 @@ sudo -u mini-soc-response sudo -n /usr/bin/id                                   
 - 기능 전체 제거: 8080 server의 include 줄을 삭제하고 `sudo nginx -t && sudo systemctl reload nginx`, 그다음
   `sudo rm /etc/sudoers.d/mini-soc-web /usr/local/sbin/mini-soc-webblock`
 - 최악의 경우: 1단계 백업 디렉터리에서 `/etc/nginx`를 복원한 뒤 `nginx -t`와 reload
+
+---
+
+# 미니 PC SSH(UFW 22/tcp) 수동 차단 실행기 설치 (사용자 별도 승인 후 직접 실행)
+
+Django 쪽은 `backend/events/ip_actions.py`. 관리자 패널에서 `ssh_brute_force` 경보가 있는 IP만 선택해
+`sudo -n /usr/local/sbin/mini-soc-sshblock block|unblock <ip>`를 보낸다. 상태는 기존 `sudo -n ufw status`로 읽는다.
+실행기는 `ufw prepend|delete deny proto tcp from <ip> to any port 22` 한 형태만 다루며, 다른 UFW 규칙(사람이 만든 규칙
+포함)과 UFW 활성화 상태는 건드리지 않는다. 자동 대응(`RESPONSE_EXECUTE`)과 웹 차단 실행기는 변경하지 않는다.
+
+**경고:** SSH 차단은 관리 접속을 끊을 수 있다. 모든 단계 전에 미니 PC 콘솔(모니터·키보드) 접근을 확보한다.
+
+## S0. 읽기 전용 사전 확인
+
+```sh
+sudo ufw status numbered
+sudo -l -U mini-soc-response
+grep -E 'Accepted|Failed' /var/log/auth.log | tail -20     # 관리 접속·공격 장비의 실제 출발지 확인
+echo "$SSH_CLIENT"                                         # 현재 관리 세션의 출발지
+```
+
+확인할 것: UFW가 active인지, 관리 SSH 출발지(관제 PC 172.18.20.65 등)가 `ssh-protected.txt`에 모두 있는지,
+공격 장비의 출발지가 보호 대상과 다른지.
+
+## S1. 백업
+
+```sh
+sudo cp -a /etc/ufw /root/ufw-backup-$(date +%Y%m%d-%H%M%S)
+sudo cp -a /etc/sudoers.d /root/sudoers.d-backup-$(date +%Y%m%d-%H%M%S)
+```
+
+## S2. 실행기와 목록
+
+```sh
+sudo install -o root -g root -m 0755 mini-soc-sshblock /usr/local/sbin/mini-soc-sshblock
+sudo install -d -o root -g root -m 0755 /etc/mini-soc
+sudo install -o root -g root -m 0644 ssh-protected.txt /etc/mini-soc/ssh-protected.txt   # 필수, 관리 출발지 모두 포함
+# 공격 장비 LAN IP 확인 후에만 (/32):
+# echo '<공격IP>/32' | sudo tee /etc/mini-soc/ssh-private-allowed.txt && sudo chmod 0644 /etc/mini-soc/ssh-private-allowed.txt
+```
+
+## S3. sudoers
+
+```sh
+sudo visudo -f /etc/sudoers.d/mini-soc-ssh     # 내용은 sudoers-mini-soc-ssh.example
+sudo visudo -c && sudo -l -U mini-soc-response
+```
+
+기존 `ufw status` 정확 줄은 유지한다. 기존 172.22.16.235 전용 `ufw prepend/delete` 줄은 실행기 검증 후 별도 승인으로 제거한다.
+
+## S4. 거부 동작 확인 (UFW를 바꾸지 않음)
+
+```sh
+sudo -u mini-soc-response sudo -n /usr/local/sbin/mini-soc-sshblock block 172.18.20.65   # exit 6 (보호/사설)
+sudo -u mini-soc-response sudo -n /usr/local/sbin/mini-soc-sshblock block 127.0.0.1      # exit 6
+sudo -u mini-soc-response sudo -n /usr/local/sbin/mini-soc-sshblock block any            # exit 2
+sudo -u mini-soc-response sudo -n /usr/sbin/ufw disable                                   # sudo가 거부해야 함
+```
+
+## S5. 첫 실차단 (별도 승인) — 15분 복구 타이머
+
+```sh
+sudo systemd-run --on-active=15m --unit=minisoc-ssh-failsafe \
+  /usr/sbin/ufw delete deny proto tcp from <공격IP> to any port 22
+```
+
+패널에서 SSH 차단 → 공격 장비에서 새 접속 `nc -vz -w 5 172.18.20.161 22`(타임아웃이어야 함) → 관제 PC 관리 SSH 정상 확인
+→ `record_ssh_check block <id> failed --evidence "..."` → 패널에서 SSH 차단 해제 → `nc` 성공 →
+`record_ssh_check unblock <id> succeeded --evidence "..."` → 타이머 취소 `sudo systemctl stop minisoc-ssh-failsafe.timer`.
+이미 연결된 SSH 세션은 UFW의 ESTABLISHED 허용으로 유지되므로 반드시 새 접속으로 확인한다.
+
+## SSH 복구
+
+- 1순위: 관리자 패널 SSH 차단 해제
+- 콘솔: `sudo ufw delete deny proto tcp from <ip> to any port 22` 후 `sudo ufw status numbered`
+- 최악: S1 백업의 `user.rules`·`user6.rules`를 `/etc/ufw/`에 복원하고 `sudo ufw reload`
+- 기능 제거: `sudo rm /etc/sudoers.d/mini-soc-ssh /usr/local/sbin/mini-soc-sshblock`
+- Django: override 파일에 `RESPONSE_MANUAL_BLOCK_EXECUTE=false` 추가 후 `touch backend/config/settings.py`

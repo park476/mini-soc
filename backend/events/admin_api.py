@@ -20,8 +20,8 @@ from django.views.decorators.http import require_GET, require_POST
 from django.db.models import Count, Max
 
 from .ip_actions import (
-    BLOCK_SETTING, ActionRefused, approved_targets, is_fixture_ip, latest_block, manual_block, read_only_reason,
-    read_ufw_states, unblock_ip,
+    BLOCK_SETTING, PRIVATE_SETTING as SSH_PRIVATE_SETTING, SSH_HELPER, ActionRefused, is_fixture_ip, latest_block,
+    manual_block, private_ranges as ssh_private_ranges, read_only_reason, read_ufw_states, unblock_ip,
 )
 from .models import Alert, Incident, ManualBlockRecord, ResponseRecord, RiskResult, UnblockRecord, WebBlockRecord
 from .response import BLOCKED_PORT, ResponseConfigError
@@ -176,6 +176,8 @@ def _action(kind, r):
         'failure_reason': r.failure_reason, 'command': r.command,
         'ufw_before_result': None if auto else r.ufw_before_result,
         'ufw_after_result': None if auto else r.ufw_after_result,
+        # Attacker-side new SSH connection, recorded separately (record_ssh_check); auto blocks use ResponseVerification.
+        'reconnect_result': None if auto else r.kali_ssh_reconnect_result,
     }
 
 
@@ -211,7 +213,7 @@ def _threats(requester_ip=None):
     threats = []
     for row in Alert.objects.values('source_ip').annotate(alert_count=Count('id'), latest=Max('occurred_at')):
         ip = row['source_ip']
-        refused = read_only_reason(ip)
+        refused = read_only_reason(ip, 'block', requester_ip)
         web_refused = web_block.refusal(ip, 'block', requester_ip)
         block = latest_block(ip)
         threats.append({
@@ -222,6 +224,8 @@ def _threats(requester_ip=None):
             'read_only_reason': refused[1] if refused else '',
             # History only: whether this system ever blocked the IP. Never the current UFW state.
             'has_past_block': block is not None,
+            # Release does not depend on today's address rules, only on a block this system made.
+            'ssh_unblock_allowed': block is not None and not read_only_reason(ip, 'unblock'),
             'last_action': next((a for a in history if a['target_ip'] == ip), None),
             # Nginx 8080 web block: any alerted IP passing web_block.refusal; current state comes from web-status.
             'web_actionable': not web_refused, 'web_read_only_kind': web_refused[0] if web_refused else '',
@@ -236,9 +240,9 @@ def _threats(requester_ip=None):
 def threats_view(request):
     threats, history = _threats(request.META.get('REMOTE_ADDR'))
     try:
-        targets, config_error = sorted(str(ip) for ip in approved_targets()), ''
+        ssh_private, config_error = [str(n) for n in ssh_private_ranges()], ''
     except ResponseConfigError as exc:
-        targets, config_error = [], str(exc)
+        ssh_private, config_error = [], str(exc)
     try:
         web_private, web_config_error = [str(n) for n in web_block.private_ranges()], ''
     except ResponseConfigError as exc:
@@ -247,11 +251,11 @@ def threats_view(request):
         'threats': threats, 'history': history, 'blocked_port': f'{BLOCKED_PORT}/tcp',
         'unblock_enabled': getattr(settings, EXECUTE_SETTING, False) is True,
         'manual_block_enabled': getattr(settings, BLOCK_SETTING, False) is True,
-        'approved_targets': targets, 'config_error': config_error,
+        'ssh_private_ranges': ssh_private, 'ssh_helper': SSH_HELPER, 'config_error': config_error,
         'web_port': f'{web_block.WEB_PORT}/tcp', 'web_block_enabled': getattr(settings, web_block.EXECUTE_SETTING, False) is True,
         'web_private_ranges': web_private, 'web_config_error': web_config_error,
         'overrides_error': getattr(settings, 'RESPONSE_OVERRIDES_ERROR', ''),
-        'settings': {'unblock': EXECUTE_SETTING, 'manual_block': BLOCK_SETTING, 'targets': 'RESPONSE_MANUAL_TARGETS',
+        'settings': {'unblock': EXECUTE_SETTING, 'manual_block': BLOCK_SETTING, 'ssh_private_ranges': SSH_PRIVATE_SETTING,
                      'web_block': web_block.EXECUTE_SETTING, 'web_private_ranges': web_block.PRIVATE_SETTING},
     })
 
@@ -306,7 +310,9 @@ def _ip_action(request, perform, done_state, done_outcome, skipped_outcome):
 @csrf_protect
 @require_POST
 def threat_block_view(request):
-    return _ip_action(request, manual_block, 'present', 'blocked', 'already_blocked')
+    requester_ip = request.META.get('REMOTE_ADDR')
+    return _ip_action(request, lambda ip, user: manual_block(ip, user, requester_ip=requester_ip),
+                      'present', 'blocked', 'already_blocked')
 
 
 @superuser_required

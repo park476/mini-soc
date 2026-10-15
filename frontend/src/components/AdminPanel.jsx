@@ -13,6 +13,7 @@ const FAILURE = {
   not_public: '차단 불가 주소', self: '관리자 본인 IP',
 };
 const HTTP_CHECK = { success: '검증 성공', failed: '검증 실패' };
+const RECONNECT = { failed: '실패(차단됨)', succeeded: '성공(접속 가능)' };
 const UFW_SHORT = { present: '차단', absent: '없음', unchecked: '미확인' };
 const LEVEL_ORDER = { High: 3, Medium: 2, Low: 1 };
 const SORTS = {
@@ -24,12 +25,13 @@ const SORTS = {
 const LEVELS = ['전체', 'High', 'Medium', 'Low', '미판정'];
 // Commands shown for confirmation only; the server builds its own from the validated IP.
 const WEB_HELPER = '/usr/local/sbin/mini-soc-webblock';
+const SSH_HELPER = '/usr/local/sbin/mini-soc-sshblock';
 const ACTIONS = {
   block: { scope: 'ssh', title: 'SSH 접속을 차단할까요?', button: 'SSH 차단 실행', path: 'threats/block/',
-    command: (ip) => `sudo -n ufw prepend deny proto tcp from ${ip} to any port 22`,
-    note: '이 IP에서 피해 서버 SSH(22/tcp)로 들어오는 접속만 차단합니다. 웹 서비스(HTTP) 접근은 차단하지 않습니다.' },
-  unblock: { scope: 'ssh', title: 'SSH 차단을 해제할까요?', button: '차단 해제 실행', path: 'threats/unblock/',
-    command: (ip) => `sudo -n ufw delete deny proto tcp from ${ip} to any port 22`,
+    command: (ip) => `sudo -n ${SSH_HELPER} block ${ip}  (→ ufw prepend deny proto tcp from ${ip} to any port 22)`,
+    note: '이 IP에서 피해 서버 SSH(22/tcp)로 들어오는 새 접속만 차단합니다. 웹 서비스(HTTP) 접근과 다른 UFW 규칙은 바뀌지 않으며, 이미 연결된 세션은 유지될 수 있습니다.' },
+  unblock: { scope: 'ssh', title: 'SSH 차단을 해제할까요?', button: 'SSH 차단 해제 실행', path: 'threats/unblock/',
+    command: (ip) => `sudo -n ${SSH_HELPER} unblock ${ip}  (→ ufw delete deny proto tcp from ${ip} to any port 22)`,
     note: '해제하면 이 IP가 피해 서버 SSH(22/tcp)에 다시 접속을 시도할 수 있습니다.' },
   webBlock: { scope: 'web', title: '웹 접근을 차단할까요?', button: '웹 차단 실행', path: 'threats/web-block/',
     command: (ip) => `sudo -n ${WEB_HELPER} block ${ip}`,
@@ -136,18 +138,20 @@ function LastAction({ action }) {
 // The button follows the state read from the victim, never the stored history.
 function RowAction({ threat, state, config, busy, onCheck, onAsk }) {
   if (threat.is_fixture) return <span className="muted">조치 대상 아님</span>;
-  if (!threat.actionable) return <span className="muted" title={threat.read_only_reason}>조회 전용 · {FAILURE[threat.read_only_kind] ?? threat.read_only_kind}</span>;
+  const readOnly = <span className="muted" title={threat.read_only_reason}>SSH 조회 전용 · {FAILURE[threat.read_only_kind] ?? threat.read_only_kind}</span>;
+  if (!threat.actionable && !threat.has_past_block) return readOnly;
   if (busy) return <span className="muted" role="status">처리 중…</span>;
   if (!state) return <button type="button" className="btn btn-small" onClick={onCheck}>상태 확인</button>;
   if (state === 'present') {
-    const ok = config.unblock_enabled && threat.has_past_block;
+    const ok = config.unblock_enabled && threat.ssh_unblock_allowed;
     return (
       <button type="button" className="btn btn-small" disabled={!ok} onClick={() => onAsk('unblock')}
         title={ok ? undefined : config.unblock_enabled ? '이 시스템이 만든 차단 기록이 없습니다.' : `${config.settings.unblock}가 꺼져 있습니다.`}>
-        차단 해제
+        SSH 차단 해제
       </button>
     );
   }
+  if (!threat.actionable) return readOnly;
   return (
     <button type="button" className="btn btn-small btn-danger" disabled={!config.manual_block_enabled} onClick={() => onAsk('block')}
       title={config.manual_block_enabled ? undefined : `${config.settings.manual_block}가 꺼져 있습니다.`}>
@@ -300,10 +304,7 @@ function Manager({ username, onLogout, onDenied }) {
         <div><dt>주요 위험 IP</dt><dd className={real.some((t) => t.risk?.level === 'High') ? 'tone-danger' : undefined}>{data ? real.filter((t) => t.risk?.level === 'High').length : '…'}</dd><span className="sub">위험도 High</span></div>
       </dl>
 
-      {data?.config_error && <p className="state state-error" role="alert">승인 목록 설정 오류: {data.config_error}</p>}
-      {data && data.approved_targets.length === 0 && !data.config_error && (
-        <p className="admin-notice tone-warning" role="status">{data.settings.targets}가 비어 있어 SSH 차단은 모든 IP가 조회 전용입니다.</p>
-      )}
+      {data?.config_error && <p className="state state-error" role="alert">SSH 사설 허용 범위 설정 오류: {data.config_error}</p>}
       {data?.overrides_error && <p className="state state-error" role="alert">설정 override 오류로 모든 차단이 꺼져 있습니다: {data.overrides_error}</p>}
       {data?.web_config_error && <p className="state state-error" role="alert">웹 차단 승인 목록 설정 오류: {data.web_config_error}</p>}
       {ufw.error && <p className="admin-notice tone-danger" role="alert">{ufw.error} 상태를 확인할 수 없는 동안에는 SSH 차단·해제를 실행할 수 없습니다.</p>}
@@ -384,9 +385,9 @@ function Manager({ username, onLogout, onDenied }) {
         )}
         <p className="note">
           SSH 차단 상태는 피해 서버의 <span className="mono">ufw status</span>, 웹 차단 상태는 Nginx 8080 차단 목록을 읽은 결과이며, 과거 성공 기록으로 추정하지 않습니다.
-          SSH 차단은 승인 목록({data?.approved_targets.join(', ') || '없음'})의 IP만 가능합니다.
-          웹 차단은 경보가 발생한 공인 IP를 대상으로 하며, 보호 대상·관리자 본인 IP와 루프백·링크 로컬·예약 주소는 거부합니다.
-          사설 IP는 허용 범위({data?.web_private_ranges?.join(', ') || '없음'})에 있을 때만 가능합니다. 테스트·문서용 IP는 조회 전용입니다.
+          SSH 차단은 SSH 무차별 대입 경보가 발생한 IP만, 웹 차단은 경보가 발생한 IP만 대상으로 합니다.
+          두 기능 모두 보호 대상·관리자 본인 IP와 루프백·링크 로컬·예약 주소를 거부하며, 사설 IP는 명시한 허용 범위
+          (SSH: {data?.ssh_private_ranges?.join(', ') || '없음'}, 웹: {data?.web_private_ranges?.join(', ') || '없음'})에 있을 때만 가능합니다. 테스트·문서용 IP는 조회 전용입니다.
         </p>
       </section>
 
@@ -410,6 +411,7 @@ function Manager({ username, onLogout, onDenied }) {
                     <td>
                       {a.failure_kind ? `${FAILURE[a.failure_kind] ?? a.failure_kind}: ` : ''}{a.failure_reason}
                       {a.http_check_status != null && <span className="sub">공격 환경 HTTP {a.http_check_status} · {HTTP_CHECK[a.http_check_result] ?? a.http_check_result}</span>}
+                      {a.reconnect_result && a.reconnect_result !== 'unchecked' && <span className="sub">공격 환경 SSH 새 접속 {RECONNECT[a.reconnect_result]}</span>}
                     </td>
                   </tr>
                 ))}

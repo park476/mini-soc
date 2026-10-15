@@ -1,0 +1,7 @@
+# /etc/mini-soc/ssh-protected.txt - never SSH-blocked (IPs or CIDRs, one per line). Add every SSH management source.
+172.18.20.65      # school monitoring PC
+172.18.20.161     # victim mini PC
+172.29.176.40     # school WSL
+119.194.231.131   # school WSL public egress IP
+127.0.0.0/8
+::1/128

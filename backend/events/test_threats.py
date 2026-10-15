@@ -11,12 +11,15 @@ from .test_unblock import UNBLOCK_ON, ScriptedExecutor, alert, block_record, out
 API = '/api/admin-panel/'
 REAL, OTHER = '10.20.30.4', '10.20.30.9'
 STATUS = ['sudo', '-n', 'ufw', 'status']
-BLOCK = ['sudo', '-n', 'ufw', 'prepend', 'deny', 'proto', 'tcp', 'from', REAL, 'to', 'any', 'port', '22']
-DELETE = ['sudo', '-n', 'ufw', 'delete', 'deny', 'proto', 'tcp', 'from', REAL, 'to', 'any', 'port', '22']
+# The panel changes UFW only through the victim helper (deploy/victim/mini-soc-sshblock).
+BLOCK = ['sudo', '-n', '/usr/local/sbin/mini-soc-sshblock', 'block', REAL]
+DELETE = ['sudo', '-n', '/usr/local/sbin/mini-soc-sshblock', 'unblock', REAL]
 HEAD = 'Status: active\n\nTo                         Action      From\n22/tcp                     ALLOW       Anywhere\n'
 OPEN = HEAD
 BLOCKED = HEAD + f'22/tcp                     DENY        {REAL}\n'
-PANEL_ON = dict(UNBLOCK_ON, RESPONSE_MANUAL_BLOCK_EXECUTE=True, RESPONSE_MANUAL_TARGETS=REAL)
+# REAL is a private lab attacker, so it needs an explicit /32; OTHER is outside it.
+PANEL_ON = dict(UNBLOCK_ON, RESPONSE_MANUAL_BLOCK_EXECUTE=True, RESPONSE_SSH_PRIVATE_RANGES=f'{REAL}/32',
+                RESPONSE_OVERRIDES_ERROR='')
 
 
 @override_settings(**PANEL_ON)
@@ -78,29 +81,31 @@ class ThreatPanelTests(TestCase):
         self.assertEqual((real['alert_count'], real['rule_types']), (4, ['nginx_scan', 'ssh_brute_force']))
         self.assertEqual((real['has_past_block'], real['last_action'], real['incidents'], real['risk']), (False, None, [], None))
         self.assertNotIn('ufw_state', real)
-        self.assertEqual((data['approved_targets'], data['manual_block_enabled'], data['unblock_enabled']), ([REAL], True, True))
+        self.assertEqual((data['ssh_private_ranges'], data['manual_block_enabled'], data['unblock_enabled']), ([f'{REAL}/32'], True, True))
 
     def test_fixture_and_unapproved_ips_are_view_only(self):
         threats = self.threats()
         self.assertEqual([(threats[ip]['is_fixture'], threats[ip]['actionable'], threats[ip]['read_only_kind'])
                           for ip in (REAL, OTHER, FIXTURE_IP)],
-                         [(False, True, ''), (False, False, 'not_approved'), (True, False, 'fixture')])
-        # A fixture address stays view-only even if someone lists it as approved.
-        with self.settings(RESPONSE_MANUAL_TARGETS=f'{REAL},{FIXTURE_IP}'):
+                         [(False, True, ''), (False, False, 'not_public'), (True, False, 'fixture')])
+        # A fixture address stays view-only even inside an allowed range.
+        with self.settings(RESPONSE_SSH_PRIVATE_RANGES=f'{REAL}/32,192.0.2.0/24'):
             self.assertFalse(self.threats()[FIXTURE_IP]['actionable'])
             response, fake, _ = self.act('block', [], ip=FIXTURE_IP)
         self.assertEqual((response.status_code, response.json()['failure_kind'], fake.calls), (403, 'fixture', []))
 
     def test_unapproved_undetected_and_invalid_ips_are_refused(self):
-        for ip, kind in ((OTHER, 'not_approved'), ('10.9.9.9', 'not_approved'), ('1.2.3.4; reboot', 'invalid_ip')):
-            for action in ('block', 'unblock'):
+        # Unblock needs a block made by this system instead of the address rules.
+        for ip, block_kind, unblock_kind in ((OTHER, 'not_public', 'not_eligible'), ('10.9.9.9', 'not_public', 'not_eligible'),
+                                             ('1.2.3.4; reboot', 'invalid_ip', 'invalid_ip')):
+            for action, kind in (('block', block_kind), ('unblock', unblock_kind)):
                 response, fake, _ = self.act(action, [], ip=ip)
                 self.assertEqual((response.json()['failure_kind'], fake.calls), (kind, []), (ip, action))
                 self.assertIn(response.status_code, (403, 409))
-        with self.settings(RESPONSE_MANUAL_TARGETS='10.9.9.9'):  # approved but never detected
+        with self.settings(RESPONSE_SSH_PRIVATE_RANGES='10.9.9.9/32'):  # allowed range but never detected
             response, fake, _ = self.act('block', [], ip='10.9.9.9')
         self.assertEqual((response.json()['failure_kind'], fake.calls), ('not_detected', []))
-        with self.settings(RESPONSE_MANUAL_TARGETS='10.20.30.0/24'):  # CIDR is not widened into approval
+        with self.settings(RESPONSE_SSH_PRIVATE_RANGES='8.8.8.0/24'):  # a public range is not a private lab range
             response, fake, _ = self.act('block', [])
             self.assertEqual((response.json()['failure_kind'], fake.calls), ('config', []))
             self.assertFalse(self.threats()[REAL]['actionable'])
@@ -148,7 +153,7 @@ class ThreatPanelTests(TestCase):
         block = ManualBlockRecord.objects.get()
         self.assertEqual((block.requested_by, block.target_ip, block.execution_status, block.ufw_before_result, block.ufw_after_result),
                          (self.admin, REAL, 'succeeded', 'absent', 'present'))
-        self.assertIn('ufw prepend deny proto tcp', block.command)
+        self.assertEqual(block.command, f'sudo -n /usr/local/sbin/mini-soc-sshblock block {REAL}')
 
         # 이미 차단된 IP: no duplicate rule.
         response, fake, _ = self.act('block', [out(stdout=BLOCKED)])

@@ -22,9 +22,10 @@ import shlex
 from django.conf import settings
 from django.utils import timezone
 
+from . import address_policy
 from .ip_actions import ActionRefused, _executor, is_fixture_ip
 from .models import Alert, WebBlockRecord
-from .response import ResponseConfigError, _summary, parse_allowlist
+from .response import _summary
 from .unblock import _run
 
 HELPER = '/usr/local/sbin/mini-soc-webblock'
@@ -43,25 +44,8 @@ def web_command(operation, ip):
     return ['sudo', '-n', HELPER, operation, str(ipaddress.ip_address(str(ip)))]
 
 
-def _never_blockable(ip):
-    return ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified
-
-
 def private_ranges():
-    """Explicitly allowed private lab networks from RESPONSE_WEB_PRIVATE_RANGES (empty by default).
-    Every entry must be a private network; a public, loopback or link-local entry is an error."""
-    networks = []
-    for entry in (e.strip() for e in settings.RESPONSE_WEB_PRIVATE_RANGES.split(',')):
-        if not entry:
-            continue
-        try:
-            network = ipaddress.ip_network(entry, strict=False)
-        except ValueError as exc:
-            raise ResponseConfigError(f'Invalid {PRIVATE_SETTING} entry {entry!r}: {exc}') from exc
-        if not network.is_private or _never_blockable(network.network_address) or _never_blockable(network.broadcast_address):
-            raise ResponseConfigError(f'{PRIVATE_SETTING} entry {entry!r} is not a private lab network.')
-        networks.append(network)
-    return networks
+    return address_policy.private_ranges(PRIVATE_SETTING)
 
 
 def refusal(raw_ip, operation='block', requester_ip=None):
@@ -76,33 +60,12 @@ def refusal(raw_ip, operation='block', requester_ip=None):
     if getattr(settings, 'RESPONSE_OVERRIDES_ERROR', ''):
         return 'config', f'Response override file is invalid: {settings.RESPONSE_OVERRIDES_ERROR}'
     if operation == 'block':
-        if _never_blockable(ip):
-            return 'not_public', f'{ip} is a loopback, link-local, reserved, multicast or unspecified address; never web-blocked.'
-        if not ip.is_global:
-            try:
-                lab = next((n for n in private_ranges() if ip.version == n.version and ip in n), None)
-            except ResponseConfigError as exc:
-                return 'config', str(exc)
-            if lab is None:
-                return 'not_public', f'{ip} is not a public address and not in {PRIVATE_SETTING}; never web-blocked.'
-        try:
-            match = next((n for n in parse_allowlist(settings.RESPONSE_ALLOWLIST) if ip.version == n.version and ip in n), None)
-        except ResponseConfigError as exc:
-            return 'config', f'Allowlist could not be checked: {exc}'
-        if match:
-            return 'allowlisted', f'{ip} is protected by allowlist entry {match}; never web-blocked.'
-        if requester_ip and _same_ip(ip, requester_ip):
-            return 'self', f'{ip} is the requesting administrator\'s own address; never web-blocked.'
+        refused = address_policy.address_refusal(ip, PRIVATE_SETTING, requester_ip, verb='web-blocked')
+        if refused:
+            return refused
     if not Alert.objects.filter(source_ip=str(ip)).exists():
         return 'not_detected', f'{ip} has no Alert; only detected source IPs can be acted on.'
     return ''
-
-
-def _same_ip(ip, other):
-    try:
-        return ip == ipaddress.ip_address(str(other))
-    except ValueError:
-        return False
 
 
 def parse_status(output):

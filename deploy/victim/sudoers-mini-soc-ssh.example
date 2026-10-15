@@ -1,0 +1,8 @@
+# /etc/sudoers.d/mini-soc-ssh — install with: sudo visudo -f /etc/sudoers.d/mini-soc-ssh
+# Only the root-owned fixed helper; never ufw itself with wildcards (e.g. "from * to any port 22" would
+# also match "from any ..." and lock out all SSH). The helper validates the operation, IP, address class,
+# protected list and trusted paths. Keep the existing exact `ufw status` line (read-only state check).
+# SSH_CLIENT is kept only as a secondary guard against blocking the calling session's own address.
+Defaults!/usr/local/sbin/mini-soc-sshblock env_keep += "SSH_CLIENT"
+mini-soc-response ALL=(root) NOPASSWD: /usr/local/sbin/mini-soc-sshblock block *
+mini-soc-response ALL=(root) NOPASSWD: /usr/local/sbin/mini-soc-sshblock unblock *

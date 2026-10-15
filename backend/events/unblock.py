@@ -95,9 +95,10 @@ def check_block_state(record, executor=None):
     return result, evidence, kind
 
 
-def unblock_response(record, requested_by, executor=None):
+def unblock_response(record, requested_by, executor=None, command=unblock_command):
     """Remove the SSH block created by `record` (a succeeded ResponseRecord or ManualBlockRecord).
-    Always returns a saved UnblockRecord. Earlier UnblockRecords never prevent a new attempt."""
+    Always returns a saved UnblockRecord. Earlier UnblockRecords never prevent a new attempt.
+    `command` builds the remote argv; the admin panel passes the victim helper's, Django Admin the default."""
     source = {'manual_block': record} if isinstance(record, ManualBlockRecord) else {'response': record}
     audit = UnblockRecord(requested_by=requested_by, requested_by_username=requested_by.get_username(), **source)
 
@@ -110,7 +111,7 @@ def unblock_response(record, requested_by, executor=None):
     try:
         ip = _validated_ip(record)
         audit.target_ip = str(ip)
-        audit.command = shlex.join(unblock_command(ip))
+        audit.command = shlex.join(command(ip))
         executor = _enabled_executor(executor)
     except UnblockRefused as exc:
         return fail(exc.kind, exc.reason)
@@ -125,7 +126,7 @@ def unblock_response(record, requested_by, executor=None):
         return fail('', f'{ip} has no 22/tcp DENY rule on the victim (already unblocked); delete was not sent.')
 
     audit.executed_at = timezone.now()
-    result, kind, reason = _run(executor, unblock_command(ip))
+    result, kind, reason = _run(executor, command(ip))
     if result is not None:
         audit.execution_result = _summary(result)
     if kind:

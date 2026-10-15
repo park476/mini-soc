@@ -193,6 +193,7 @@ class UnblockRecord(models.Model):
     # Entered from a real observation on the Kali host; never inferred from the command result.
     kali_ssh_reconnect_result = models.CharField(max_length=9, choices=RECONNECT_RESULTS, default='unchecked')
     reconnect_check_evidence = models.TextField(blank=True)
+    reconnect_checked_at = models.DateTimeField(null=True, blank=True)
     requested_at = models.DateTimeField(auto_now_add=True)
     executed_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -214,6 +215,12 @@ class ManualBlockRecord(models.Model):
     ufw_before_evidence = models.TextField(blank=True)
     ufw_after_result = models.CharField(max_length=9, choices=ResponseVerification.UFW_RESULTS, default='unchecked')
     ufw_after_evidence = models.TextField(blank=True)
+    # A new SSH connection attempt really made from the attacker host after the block (expect failed);
+    # never inferred from the command result.
+    kali_ssh_reconnect_result = models.CharField(max_length=9, choices=ResponseVerification.RECONNECT_RESULTS,
+                                                 default='unchecked')
+    reconnect_check_evidence = models.TextField(blank=True)
+    reconnect_checked_at = models.DateTimeField(null=True, blank=True)
     requested_at = models.DateTimeField(auto_now_add=True)
     executed_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)

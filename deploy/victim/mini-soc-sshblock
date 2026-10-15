@@ -1,0 +1,173 @@
+#!/usr/bin/python3 -I
+"""mini-soc SSH (UFW 22/tcp) block helper — install on the victim as root:root 0755 at
+/usr/local/sbin/mini-soc-sshblock. Run only through sudo (see sudoers-mini-soc-ssh.example):
+
+    mini-soc-sshblock block <ip>      ufw prepend deny proto tcp from <ip> to any port 22
+    mini-soc-sshblock unblock <ip>    ufw delete deny proto tcp from <ip> to any port 22
+
+Only that one rule shape is ever added or removed; every other UFW rule (including hand-made ones) is
+left alone. UFW is never enabled, disabled, reset or reloaded, and no other port or action is used.
+The current state is read by Django with the existing read-only `sudo -n ufw status`.
+
+The helper checks everything itself instead of trusting the caller:
+- exactly one operation and one canonical IP; no shell, no paths, no other arguments
+- block: never loopback, link-local, reserved, multicast or unspecified; a private address only inside
+  PRIVATE_ALLOWED (absent = none); never anything in PROTECTED (root-owned, required: missing = refuse)
+- block: never the source address of the SSH session that called it (SSH_CLIENT, kept by sudoers).
+  SSH_CLIENT can be changed by the caller, so this is only a secondary guard; PROTECTED is the real one
+- UFW must already be active, otherwise a block would only look applied
+- it runs as root, and the helper, ufw and the lists are root-owned, not group/world-writable, not symlinks
+stderr never starts with "sudo:" so Django can tell sudo refusals apart.
+"""
+import fcntl
+import ipaddress
+import os
+import re
+import stat
+import subprocess
+import sys
+
+UFW = '/usr/sbin/ufw'
+PROTECTED = '/etc/mini-soc/ssh-protected.txt'
+PRIVATE_ALLOWED = '/etc/mini-soc/ssh-private-allowed.txt'
+LOCK = '/run/mini-soc-sshblock.lock'
+PORT = '22'
+TRUSTED_UID = 0
+MAX_RULES = 1000
+ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C'}
+_DENY_RE = re.compile(r'^22/tcp(?: \(v6\))?\s+DENY(?: IN)?\s+(?P<source>\S+)')
+
+
+def fail(code, message):
+    print(f'mini-soc-sshblock: {message}', file=sys.stderr)
+    sys.exit(code)
+
+
+def require_trusted(path, required=True):
+    """The path must be owned by root, not group/world-writable and not a symlink."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        if required:
+            fail(7, f'{path} is missing')
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        fail(7, f'{path} is a symlink; refusing to use it')
+    if st.st_uid != TRUSTED_UID or st.st_mode & 0o022:
+        fail(7, f'{path} must be owned by root and not group/world-writable')
+    return True
+
+
+def never_blockable(ip):
+    return ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+
+
+def parse_ip(raw):
+    try:
+        ip = ipaddress.ip_address(raw)
+    except ValueError:
+        fail(2, f'invalid IP {raw!r}')
+    if str(ip) != raw:
+        fail(2, f'IP must be in canonical form ({ip})')
+    return ip
+
+
+def read_networks(path, required):
+    """IPs/CIDRs, one per line, '#' comments. A missing required list or any bad entry refuses the block."""
+    if not require_trusted(path, required):
+        return []
+    try:
+        with open(path, encoding='utf-8') as f:
+            entries = [e.split('#', 1)[0].strip() for e in f]
+    except (OSError, UnicodeDecodeError) as exc:
+        fail(3, f'cannot read {path}: {exc}; refusing to block')
+    networks = []
+    for entry in filter(None, entries):
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            fail(3, f'invalid entry {entry!r} in {path}; refusing to block')
+    return networks
+
+
+def check_block_allowed(ip):
+    if never_blockable(ip):
+        fail(6, f'{ip} is a loopback, link-local, reserved, multicast or unspecified address; refusing to block')
+    if not ip.is_global:
+        lab = [n for n in read_networks(PRIVATE_ALLOWED, required=False)
+               if n.is_private and not never_blockable(n.network_address)]
+        if not ip.is_private or not any(ip.version == n.version and ip in n for n in lab):
+            fail(6, f'{ip} is not a public address and not in {PRIVATE_ALLOWED}; refusing to block')
+    match = next((n for n in read_networks(PROTECTED, required=True) if ip.version == n.version and ip in n), None)
+    if match:
+        fail(6, f'{ip} is protected ({match}); refusing to block')
+    caller = os.environ.get('SSH_CLIENT', '').split(' ')[0]
+    try:
+        if caller and ipaddress.ip_address(caller) == ip:
+            fail(6, f'{ip} is the address of the calling SSH session; refusing to block')
+    except ValueError:
+        pass
+
+
+def run(argv):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, env=ENV, timeout=20, check=False)
+    except subprocess.TimeoutExpired:
+        fail(5, f'{argv[1]} timed out; the rule state is unknown')
+
+
+def ufw_state():
+    """(active, set of IPs with a 22/tcp DENY rule) from `ufw status`."""
+    result = run([UFW, 'status'])
+    if result.returncode != 0:
+        fail(4, f'ufw status failed: {result.stderr.strip()[-300:]}')
+    lines = result.stdout.splitlines()
+    active = bool(lines) and lines[0].strip() == 'Status: active'
+    denied = set()
+    for line in lines:
+        m = _DENY_RE.match(line.strip())
+        if m:
+            try:
+                denied.add(ipaddress.ip_address(m['source']))
+            except ValueError:
+                continue
+    return active, denied
+
+
+def main(argv):
+    if len(argv) != 2 or argv[0] not in ('block', 'unblock'):
+        fail(2, 'usage: mini-soc-sshblock block <ip> | unblock <ip>')
+    if os.geteuid() != TRUSTED_UID:
+        fail(7, 'must run as root (through sudo)')
+    for path in (os.path.realpath(__file__), UFW, os.path.dirname(PROTECTED)):
+        require_trusted(path)
+    operation, ip = argv[0], parse_ip(argv[1])
+    rule = ['proto', 'tcp', 'from', str(ip), 'to', 'any', 'port', PORT]
+    with open(LOCK, 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        active, denied = ufw_state()
+        if not active:
+            fail(9, 'UFW is not active; refusing (this helper never enables UFW)')
+        if operation == 'block':
+            check_block_allowed(ip)
+            if ip in denied:
+                print(f'{ip} already blocked on {PORT}/tcp')
+                return
+            if len(denied) >= MAX_RULES:
+                fail(8, f'already {MAX_RULES} {PORT}/tcp DENY rules; refusing to add more')
+            result = run([UFW, 'prepend', 'deny'] + rule)
+        else:
+            if ip not in denied:
+                print(f'{ip} not blocked on {PORT}/tcp')
+                return
+            result = run([UFW, 'delete', 'deny'] + rule)
+        if result.returncode != 0:
+            fail(4, f'ufw {operation} failed: {(result.stderr or result.stdout).strip()[-300:]}')
+        _, denied = ufw_state()
+        if (ip in denied) != (operation == 'block'):
+            fail(10, f'ufw {operation} ran but the {PORT}/tcp DENY rule for {ip} is {"absent" if operation == "block" else "still present"}')
+        print(f'{ip} {operation}ed on {PORT}/tcp')
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

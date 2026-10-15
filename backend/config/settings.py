@@ -152,9 +152,11 @@ CSRF_TRUSTED_ORIGINS = [
 # Manual admin SSH block / re-block from the React 관리자 패널 (events/ip_actions.py). A third, separate
 # opt-in: it neither needs nor enables RESPONSE_EXECUTE (automatic) or RESPONSE_UNBLOCK_EXECUTE.
 RESPONSE_MANUAL_BLOCK_EXECUTE = os.environ.get('RESPONSE_MANUAL_BLOCK_EXECUTE', '').strip().lower() == 'true'
-# Exact IPs (no CIDR) an administrator may block/unblock from the panel. Must match what the victim's
-# sudoers actually permits; every other IP is view-only. Empty = the whole panel is view-only.
+# No longer used by the panel (2026-10-15): any IP with an ssh_brute_force Alert may be SSH-blocked
+# (events/ip_actions.py). Kept so an existing .env still loads.
 RESPONSE_MANUAL_TARGETS = os.environ.get('RESPONSE_MANUAL_TARGETS', '')
+# Private lab networks (CIDRs, use /32) allowed for manual SSH block; empty = private IPs never SSH-blocked.
+RESPONSE_SSH_PRIVATE_RANGES = os.environ.get('RESPONSE_SSH_PRIVATE_RANGES', '')
 
 # Manual admin Nginx web (8080) block / unblock (events/web_block.py). A fourth, separate opt-in.
 RESPONSE_WEB_BLOCK_EXECUTE = os.environ.get('RESPONSE_WEB_BLOCK_EXECUTE', '').strip().lower() == 'true'

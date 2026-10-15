@@ -257,3 +257,23 @@ PRD와 02·03·04 설계 문서 본문은 수정하지 않았다. 이 기록이 
 | 221.165.139.110 | 보호 해제 — Kali 공격 노트북의 당시 공인 IP. 웹 차단·해제 실증 완료(WebBlockRecord #5·#6) |
 
 웹 차단은 실제 Kali 환경에서 HTTP 200 → 403 → 200으로 검증되었다(사용자 확인). 해당 HTTP 결과는 아직 `record_web_check`로 DB에 기록되지 않았다.
+
+## 2026-10-15 — SSH(UFW 22/tcp) 수동 차단: 고정 IP 승인에서 경보 기반 동적 IP로 변경 (사용자 최신 결정)
+
+근거: 사용자의 최신 명시적 승인. 2026-10-12 "IP 중심 위협 관리와 수동 SSH 차단" 기록의 조치 가능 IP 조건(`RESPONSE_MANUAL_TARGETS` 정확한 IP)을 대체한다. 앞 기록은 이력으로 남긴다.
+
+| 기존 | 최신 결정 |
+|---|---|
+| `RESPONSE_MANUAL_TARGETS`에 등록되고 Alert(종류 무관)가 있는 IP만 SSH 수동 차단 | `ssh_brute_force` Alert가 있는 IP를 superuser가 패널에서 선택. Nginx 경보만 있는 IP는 SSH 대상 아님. `RESPONSE_MANUAL_TARGETS`는 더 이상 사용하지 않음(변수는 호환을 위해 유지) |
+| 패널이 `sudo -n ufw prepend/delete …`를 IP별 정확 sudoers 줄로 실행 | 패널은 root 소유 실행기 `/usr/local/sbin/mini-soc-sshblock block|unblock <ip>`만 호출. 실행기가 명령·IP 형식·주소 종류·보호 목록(필수)·실행 파일·경로·UFW 활성 여부를 자체 검증. sudoers에 ufw 와일드카드 권한 없음 |
+
+확정 내용:
+- 주소 규칙(웹 차단과 공통, `events/address_policy.py`): 공인 IP는 `ssh_brute_force` 경보 필수. 사설 IP는 `RESPONSE_SSH_PRIVATE_RANGES`와 미니 PC `/etc/mini-soc/ssh-private-allowed.txt`에 명시한 범위만(기본 비어 있음, 공격 장비 LAN IP 확인 후 /32). 웹 허용 범위와 별개.
+- 차단 거부: 보호 목록(172.18.20.65, 172.18.20.161, 172.29.176.40, 119.194.231.131), 요청한 관리자의 접속 주소, 루프백·링크 로컬·예약·멀티캐스트·미지정·문서용 주소. 실행기는 호출 SSH 세션 출발지(`SSH_CLIENT`)도 거부하지만 조작 가능하므로 보조 방어선으로만 쓰고, root 소유 보호 목록 검사를 필수로 한다.
+- 해제: 이 시스템이 만든 성공 차단 기록(자동 ResponseRecord 또는 ManualBlockRecord)이 있는 IP만. 사람이 만든 UFW 규칙은 패널에서 지우지 않는다. 주소 규칙이 바뀌어도 이 시스템이 만든 차단은 해제할 수 있다.
+- 실행기는 `22/tcp DENY from <ip>` 한 형태만 추가·삭제한다. UFW enable/disable/reset/reload, 다른 포트·동작은 사용하지 않는다. UFW가 비활성이면 거부한다.
+- 자동 대응(`response.py`, `RESPONSE_EXECUTE=false`)과 Django Admin 해제 경로는 기존 직접 UFW 명령과 정책을 유지한다. 웹 차단 기능·WebBlockRecord는 변경하지 않았다.
+- 실제 효과 검증은 명령 결과와 분리: migration 0009(추가형, ManualBlockRecord 재접속 결과 3필드·UnblockRecord 확인 시각 1필드)와 `record_ssh_check`로 공격 장비의 새 SSH 접속 결과를 기록한다. 차단 검증 = UFW 규칙 있음 + 새 접속 실패, 해제 검증 = 규칙 없음 + 새 접속 성공.
+- override 허용 키에 `RESPONSE_SSH_PRIVATE_RANGES`, `RESPONSE_MANUAL_BLOCK_EXECUTE` 추가(컨테이너 재생성 없이 SSH 차단을 끌 수 있게).
+- 실증 네트워크: Kali 노트북은 현재 핫스팟 환경에서 미니 PC 22번에 직접 접근하지 못해 경로가 미확정이다. 공격 출발지는 관제 PC(172.18.20.65)와 달라야 하며 Cloudflare Tunnel을 거치지 않는 직접 TCP 22 경로가 필요하다.
+- 첫 실차단은 15분 복구 타이머를 계획한다. 미니 PC sudoers·실행기 설치, UFW 변경, 실제 SSH 차단은 아직 수행하지 않았다.

@@ -97,7 +97,7 @@ class WebBlockPanelTests(TestCase):
                          [(IP_A, True, ''), (IP_B, True, ''), (PROTECTED, False, 'allowlisted'), (LAB, False, 'not_public'),
                           (SSH_TARGET, False, 'not_public'), (FIXTURE_IP, False, 'fixture')])
         self.assertNotIn(UNALERTED, threats)
-        # The SSH panel is unchanged: SSH still needs RESPONSE_MANUAL_TARGETS.
+        # SSH block is separate: it needs an ssh_brute_force Alert, which the web-only IPs do not have.
         self.assertEqual((threats[IP_A]['actionable'], threats[SSH_TARGET]['actionable']), (False, True))
         data = self.client.get(API + 'threats/').json()
         self.assertEqual((data['web_block_enabled'], data['web_port'], data['web_private_ranges']), (True, '8080/tcp', []))
