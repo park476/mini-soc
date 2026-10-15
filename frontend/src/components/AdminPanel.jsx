@@ -3,14 +3,16 @@ import { formatTime, go, ruleLabel } from '../api';
 import { Badge, RiskBadge } from './Status';
 
 const API = '/api/admin-panel/';
-const KIND = { auto_block: '자동 차단', manual_block: '수동 차단', unblock: '차단 해제' };
+const KIND = { auto_block: '자동 차단', manual_block: '수동 차단', unblock: '차단 해제', web_block: '웹 차단', web_unblock: '웹 차단 해제' };
 const STATUS_TONE = { succeeded: 'success', skipped: 'neutral', failed: 'danger', unknown: 'warning' };
 const STATUS_LABEL = { succeeded: '성공', skipped: '미실행', failed: '실패', unknown: '확인 불가' };
 const FAILURE = {
   not_eligible: '대상 아님', invalid_ip: 'IP 오류', config: '설정', ssh_error: 'SSH 오류', sudo_denied: 'sudo 거부',
   timeout: '타임아웃', command_failed: '명령 실패', rule_still_present: '규칙 잔존', rule_not_present: '규칙 미적용',
-  fixture: '테스트 IP', not_approved: '승인 목록 외', not_detected: '탐지 이력 없음', allowlisted: '허용 목록',
+  fixture: '테스트 IP', not_approved: '승인 목록 외', not_detected: '탐지 이력 없음', allowlisted: '보호 대상',
+  not_public: '차단 불가 주소', self: '관리자 본인 IP',
 };
+const HTTP_CHECK = { success: '검증 성공', failed: '검증 실패' };
 const UFW_SHORT = { present: '차단', absent: '없음', unchecked: '미확인' };
 const LEVEL_ORDER = { High: 3, Medium: 2, Low: 1 };
 const SORTS = {
@@ -21,12 +23,23 @@ const SORTS = {
 };
 const LEVELS = ['전체', 'High', 'Medium', 'Low', '미판정'];
 // Commands shown for confirmation only; the server builds its own from the validated IP.
+const WEB_HELPER = '/usr/local/sbin/mini-soc-webblock';
 const ACTIONS = {
-  block: { title: 'SSH 접속을 차단할까요?', verb: 'prepend', button: 'SSH 차단 실행', path: 'threats/block/',
+  block: { scope: 'ssh', title: 'SSH 접속을 차단할까요?', button: 'SSH 차단 실행', path: 'threats/block/',
+    command: (ip) => `sudo -n ufw prepend deny proto tcp from ${ip} to any port 22`,
     note: '이 IP에서 피해 서버 SSH(22/tcp)로 들어오는 접속만 차단합니다. 웹 서비스(HTTP) 접근은 차단하지 않습니다.' },
-  unblock: { title: 'SSH 차단을 해제할까요?', verb: 'delete', button: '차단 해제 실행', path: 'threats/unblock/',
+  unblock: { scope: 'ssh', title: 'SSH 차단을 해제할까요?', button: '차단 해제 실행', path: 'threats/unblock/',
+    command: (ip) => `sudo -n ufw delete deny proto tcp from ${ip} to any port 22`,
     note: '해제하면 이 IP가 피해 서버 SSH(22/tcp)에 다시 접속을 시도할 수 있습니다.' },
+  webBlock: { scope: 'web', title: '웹 접근을 차단할까요?', button: '웹 차단 실행', path: 'threats/web-block/',
+    command: (ip) => `sudo -n ${WEB_HELPER} block ${ip}`,
+    note: '피해 서버 Nginx 8080 서비스에 이 IP의 요청이 오면 403을 반환합니다. SSH, Apache 80, Juice Shop 3000은 바뀌지 않습니다.' },
+  webUnblock: { scope: 'web', title: '웹 차단을 해제할까요?', button: '웹 차단 해제 실행', path: 'threats/web-unblock/',
+    command: (ip) => `sudo -n ${WEB_HELPER} unblock ${ip}`,
+    note: '해제하면 이 IP가 Nginx 8080 서비스에 다시 접근할 수 있습니다.' },
 };
+const SCOPE = { ssh: { name: 'SSH', where: 'UFW', port: (data) => `${data.blocked_port} (SSH)` },
+  web: { name: '웹', where: 'Nginx 차단 목록', port: (data) => `${data.web_port} (Nginx 웹)` } };
 
 function csrfToken() {
   return document.cookie.split('; ').find((c) => c.startsWith('csrftoken='))?.slice('csrftoken='.length) ?? '';
@@ -81,24 +94,25 @@ function Login({ onLogin }) {
 }
 
 function ConfirmDialog({ pending, port, onCancel, onConfirm }) {
+  const action = ACTIONS[pending.action];
+  const scope = SCOPE[action.scope];
   const ref = useRef(null);
   useEffect(() => {
     const dialog = ref.current;
     dialog.showModal();
     return () => dialog.close();
   }, []);
-  const action = ACTIONS[pending.action];
   return (
     <dialog ref={ref} className="admin-dialog" onCancel={onCancel} aria-labelledby="action-title">
-      <span className="kicker">확인 필요 · 피해 서버 방화벽 변경</span>
+      <span className="kicker">확인 필요 · 피해 서버 {action.scope === 'web' ? '웹 접근' : '방화벽'} 변경</span>
       <h2 id="action-title">{action.title}</h2>
       <dl className="margin-facts">
         <div><dt>대상 IP</dt><dd className="mono">{pending.ip}</dd></div>
-        <div><dt>대상 포트</dt><dd className="mono">{port} (SSH)</dd></div>
-        <div><dt>실행 명령</dt><dd className="mono">sudo -n ufw {action.verb} deny proto tcp from {pending.ip} to any port 22</dd></div>
+        <div><dt>대상 포트</dt><dd className="mono">{port}</dd></div>
+        <div><dt>실행 명령</dt><dd className="mono">{action.command(pending.ip)}</dd></div>
       </dl>
       <p className="note">
-        {action.note} 서버가 실행 직전에 UFW 상태를 다시 읽고, 실행 후 한 번 더 읽어 결과를 기록합니다.
+        {action.note} 서버가 실행 직전에 {scope.where} 상태를 다시 읽고, 실행 후 한 번 더 읽어 결과를 기록합니다.
         과거 차단·검증 기록은 바뀌지 않습니다.
       </p>
       <div className="admin-actions">
@@ -142,10 +156,34 @@ function RowAction({ threat, state, config, busy, onCheck, onAsk }) {
   );
 }
 
+// Same rule for the Nginx 8080 web block: only the state read from the victim's blocklist counts.
+function WebRowAction({ threat, state, config, busy, onCheck, onAsk }) {
+  if (threat.is_fixture) return null;
+  if (busy) return <span className="muted" role="status">처리 중…</span>;
+  if (state === 'present') {
+    const ok = config.web_block_enabled && threat.web_unblock_allowed;
+    return (
+      <button type="button" className="btn btn-small" disabled={!ok} onClick={() => onAsk('webUnblock')}
+        title={ok ? undefined : config.web_block_enabled ? '경보 기록이 없는 IP는 해제할 수 없습니다.' : `${config.settings.web_block}가 꺼져 있습니다.`}>
+        웹 차단 해제
+      </button>
+    );
+  }
+  if (!threat.web_actionable) return <span className="muted" title={threat.web_read_only_reason}>웹 조회 전용 · {FAILURE[threat.web_read_only_kind] ?? threat.web_read_only_kind}</span>;
+  if (!state) return <button type="button" className="btn btn-small" onClick={onCheck}>웹 상태 확인</button>;
+  return (
+    <button type="button" className="btn btn-small btn-danger" disabled={!config.web_block_enabled} onClick={() => onAsk('webBlock')}
+      title={config.web_block_enabled ? undefined : `${config.settings.web_block}가 꺼져 있습니다.`}>
+      웹 차단
+    </button>
+  );
+}
+
 function Manager({ username, onLogout, onDenied }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [ufw, setUfw] = useState({ states: {}, checkedAt: null, error: '' });
+  const [web, setWeb] = useState({ states: {}, checkedAt: null, error: '' });
   const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState({});
   const [pending, setPending] = useState(null);
@@ -177,18 +215,20 @@ function Manager({ username, onLogout, onDenied }) {
     call('threats/').then(apply);
   }, [apply]);
 
+  // Reads SSH (UFW) and web (Nginx blocklist) state together; each failure is reported on its own.
   async function checkStatus() {
     setChecking(true);
-    const result = await call('ufw-status/', {});
+    const [ssh, nginx] = await Promise.all([call('ufw-status/', {}), call('web-status/', {})]);
     setChecking(false);
-    if (denied(result)) return;
-    if (result.ok && !result.data.failure_kind) {
-      setUfw({ states: result.data.states, checkedAt: result.data.checked_at, error: '' });
-    } else {
+    if (denied(ssh) || denied(nginx)) return;
+    const read = (result, label) => {
+      if (result.ok && !result.data.failure_kind) return { states: result.data.states, checkedAt: result.data.checked_at, error: '' };
       // An unreadable state is unknown, not "unblocked": every change button stays off.
       const reason = result.ok ? `${FAILURE[result.data.failure_kind] ?? result.data.failure_kind}: ${result.data.detail}` : `HTTP ${result.status}`;
-      setUfw({ states: {}, checkedAt: null, error: `피해 서버 UFW 상태를 읽지 못했습니다 — ${reason}` });
-    }
+      return { states: {}, checkedAt: null, error: `피해 서버 ${label} 상태를 읽지 못했습니다 — ${reason}` };
+    };
+    setUfw(read(ssh, 'UFW'));
+    setWeb(read(nginx, 'Nginx 웹 차단'));
   }
 
   async function run({ action, ip }) {
@@ -198,8 +238,9 @@ function Manager({ username, onLogout, onDenied }) {
     setBusy((s) => ({ ...s, [ip]: false }));
     if (denied(result)) return;
     const d = result.data;
-    // The server re-read UFW after the change; an unreadable result leaves the state unknown.
-    setUfw((s) => {
+    const scope = ACTIONS[action].scope;
+    // The server re-read the victim after the change; an unreadable result leaves the state unknown.
+    (scope === 'web' ? setWeb : setUfw)((s) => {
       const states = { ...s.states };
       if (d.ufw_state === 'present' || d.ufw_state === 'absent') states[ip] = d.ufw_state;
       else delete states[ip];
@@ -211,8 +252,14 @@ function Manager({ username, onLogout, onDenied }) {
       unblocked: ['success', `${ip} SSH 차단을 해제했고, 실행 후 UFW에 규칙이 없음을 확인했습니다. Kali 재접속은 별도 검증 항목입니다.`],
       already_unblocked: ['neutral', `${ip}에는 이미 차단 규칙이 없어 삭제 명령을 보내지 않았습니다.`],
     };
-    const [tone, text] = messages[d.outcome]
-      ?? ['danger', `${ip} ${action === 'block' ? 'SSH 차단' : '차단 해제'} 실패 — ${FAILURE[d.failure_kind] ?? d.failure_kind ?? `HTTP ${result.status}`}: ${d.detail ?? ''}`];
+    const webMessages = {
+      blocked: ['success', `${ip} 웹(Nginx 8080) 차단을 적용했고, 실행 후 차단 목록에서 확인했습니다. 공격 환경의 HTTP 403 확인은 별도 검증 항목입니다.`],
+      already_blocked: ['neutral', `${ip}은 이미 웹 차단 중이어서 다시 추가하지 않았습니다.`],
+      unblocked: ['success', `${ip} 웹 차단을 해제했고, 실행 후 차단 목록에 없음을 확인했습니다. HTTP 200 복구 확인은 별도 검증 항목입니다.`],
+      already_unblocked: ['neutral', `${ip}은 웹 차단 목록에 없어 해제 명령을 보내지 않았습니다.`],
+    };
+    const [tone, text] = (scope === 'web' ? webMessages : messages)[d.outcome]
+      ?? ['danger', `${ip} ${ACTIONS[action].button.replace(' 실행', '')} 실패 — ${FAILURE[d.failure_kind] ?? d.failure_kind ?? `HTTP ${result.status}`}: ${d.detail ?? ''}`];
     setNotice({ tone, text });
     load();
   }
@@ -225,6 +272,8 @@ function Manager({ username, onLogout, onDenied }) {
   const threats = data?.threats ?? [];
   const real = threats.filter((t) => !t.is_fixture);
   const blocked = real.filter((t) => ufw.states[t.ip] === 'present').length;
+  const webBlocked = real.filter((t) => web.states[t.ip] === 'present').length;
+  const checkedAt = ufw.checkedAt || web.checkedAt;
   const needle = query.trim();
   const rows = threats
     .filter((t) => !needle || t.ip.includes(needle))
@@ -237,7 +286,7 @@ function Manager({ username, onLogout, onDenied }) {
         <div>
           <span className="kicker">ADMIN · 관리자 전용</span>
           <h1 className="screen-title">위협 IP 관리</h1>
-          <p className="screen-note">경보가 발생한 출발지 IP별로 탐지 내용과 피해 서버의 SSH(22/tcp) 차단 상태를 관리합니다. 차단은 SSH 접속에만 적용되며 웹 접근은 막지 않습니다.</p>
+          <p className="screen-note">경보가 발생한 출발지 IP별로 탐지 내용과 피해 서버의 차단 상태를 관리합니다. SSH 차단은 UFW 22/tcp에, 웹 차단은 Nginx 8080 서비스에만 적용되며 서로 영향을 주지 않습니다.</p>
         </div>
         <div className="admin-user">
           <span><strong>{username}</strong> 로그인 중</span>
@@ -247,15 +296,18 @@ function Manager({ username, onLogout, onDenied }) {
 
       <dl className="admin-stats">
         <div><dt>탐지 IP</dt><dd>{data ? real.length : '…'}</dd><span className="sub">{data && threats.length > real.length ? `테스트 IP ${threats.length - real.length}개 별도` : '경보 발생 출발지'}</span></div>
-        <div><dt>실제 SSH 차단 중</dt><dd className={blocked ? 'tone-danger' : undefined}>{ufw.checkedAt ? blocked : '—'}</dd><span className="sub">{ufw.checkedAt ? `${formatTime(ufw.checkedAt)} UFW 확인` : '피해 서버 상태 미확인'}</span></div>
+        <div><dt>실제 차단 중 · SSH / 웹</dt><dd className={blocked || webBlocked ? 'tone-danger' : undefined}>{ufw.checkedAt ? blocked : '—'} / {web.checkedAt ? webBlocked : '—'}</dd><span className="sub">{checkedAt ? `${formatTime(checkedAt)} UFW·Nginx 확인` : '피해 서버 상태 미확인'}</span></div>
         <div><dt>주요 위험 IP</dt><dd className={real.some((t) => t.risk?.level === 'High') ? 'tone-danger' : undefined}>{data ? real.filter((t) => t.risk?.level === 'High').length : '…'}</dd><span className="sub">위험도 High</span></div>
       </dl>
 
       {data?.config_error && <p className="state state-error" role="alert">승인 목록 설정 오류: {data.config_error}</p>}
       {data && data.approved_targets.length === 0 && !data.config_error && (
-        <p className="admin-notice tone-warning" role="status">{data.settings.targets}가 비어 있어 모든 IP가 조회 전용입니다.</p>
+        <p className="admin-notice tone-warning" role="status">{data.settings.targets}가 비어 있어 SSH 차단은 모든 IP가 조회 전용입니다.</p>
       )}
-      {ufw.error && <p className="admin-notice tone-danger" role="alert">{ufw.error} 상태를 확인할 수 없는 동안에는 차단·해제를 실행할 수 없습니다.</p>}
+      {data?.overrides_error && <p className="state state-error" role="alert">설정 override 오류로 모든 차단이 꺼져 있습니다: {data.overrides_error}</p>}
+      {data?.web_config_error && <p className="state state-error" role="alert">웹 차단 승인 목록 설정 오류: {data.web_config_error}</p>}
+      {ufw.error && <p className="admin-notice tone-danger" role="alert">{ufw.error} 상태를 확인할 수 없는 동안에는 SSH 차단·해제를 실행할 수 없습니다.</p>}
+      {web.error && <p className="admin-notice tone-danger" role="alert">{web.error} 상태를 확인할 수 없는 동안에는 웹 차단·해제를 실행할 수 없습니다.</p>}
       {notice && <p className={`admin-notice tone-${notice.tone}`} role="status">{notice.text}</p>}
       {error && <p className="state state-error" role="alert">{error} <button type="button" className="link" onClick={load}>다시 조회</button></p>}
 
@@ -274,7 +326,7 @@ function Manager({ username, onLogout, onDenied }) {
           </label>
           <span className="admin-toolbar-end">
             <button type="button" className="btn btn-small" onClick={load}>새로고침</button>
-            <button type="button" className="btn btn-small btn-primary" disabled={checking} onClick={checkStatus}>{checking ? '확인 중…' : 'UFW 상태 확인'}</button>
+            <button type="button" className="btn btn-small btn-primary" disabled={checking} onClick={checkStatus}>{checking ? '확인 중…' : '차단 상태 확인'}</button>
           </span>
         </div>
 
@@ -284,11 +336,12 @@ function Manager({ username, onLogout, onDenied }) {
           <div className="admin-table">
             <table className="log">
               <thead>
-                <tr><th>IP 주소</th><th>탐지 유형</th><th>경보</th><th>최신 탐지</th><th>위험도</th><th>보안 사고</th><th>SSH 차단 상태 (UFW)</th><th>최근 차단·해제</th><th>관리 작업</th></tr>
+                <tr><th>IP 주소</th><th>탐지 유형</th><th>경보</th><th>최신 탐지</th><th>위험도</th><th>보안 사고</th><th>SSH 차단 상태 (UFW)</th><th>웹 차단 상태 (Nginx 8080)</th><th>최근 차단·해제</th><th>관리 작업</th></tr>
               </thead>
               <tbody>
                 {rows.map((t) => {
                   const state = ufw.states[t.ip];
+                  const webState = web.states[t.ip];
                   return (
                     <tr key={t.ip} className={t.is_fixture ? 'row-fixture' : undefined}>
                       <td className="mono"><strong>{t.ip}</strong>{t.is_fixture && <span className="sub">테스트·문서용 IP</span>}</td>
@@ -305,10 +358,22 @@ function Manager({ username, onLogout, onDenied }) {
                             : state === 'absent' ? <Badge tone="success">차단 없음</Badge>
                               : <Badge tone="warning">미확인</Badge>}
                       </td>
+                      <td aria-live="polite">
+                        {t.is_fixture ? <span className="muted">해당 없음</span>
+                          : webState === 'present' ? <Badge tone="danger">웹 차단 중</Badge>
+                            : webState === 'absent' ? <Badge tone="success">차단 없음</Badge>
+                              : <Badge tone="warning">미확인</Badge>}
+                      </td>
                       <td><LastAction action={t.last_action} /></td>
                       <td>
-                        <RowAction threat={t} state={state} config={data} busy={busy[t.ip] || checking}
-                          onCheck={checkStatus} onAsk={(action) => setPending({ action, ip: t.ip })} />
+                        <span className="admin-rule">
+                          <RowAction threat={t} state={state} config={data} busy={busy[t.ip] || checking}
+                            onCheck={checkStatus} onAsk={(action) => setPending({ action, ip: t.ip })} />
+                        </span>
+                        <span className="admin-rule">
+                          <WebRowAction threat={t} state={webState} config={data} busy={busy[t.ip] || checking}
+                            onCheck={checkStatus} onAsk={(action) => setPending({ action, ip: t.ip })} />
+                        </span>
                       </td>
                     </tr>
                   );
@@ -318,8 +383,10 @@ function Manager({ username, onLogout, onDenied }) {
           </div>
         )}
         <p className="note">
-          SSH 차단 상태는 피해 서버의 <span className="mono">ufw status</span>를 읽은 결과이며, 과거 차단 성공 기록으로 추정하지 않습니다.
-          승인 목록({data?.approved_targets.join(', ') || '없음'})에 없는 IP와 테스트·문서용 IP는 조회 전용입니다.
+          SSH 차단 상태는 피해 서버의 <span className="mono">ufw status</span>, 웹 차단 상태는 Nginx 8080 차단 목록을 읽은 결과이며, 과거 성공 기록으로 추정하지 않습니다.
+          SSH 차단은 승인 목록({data?.approved_targets.join(', ') || '없음'})의 IP만 가능합니다.
+          웹 차단은 경보가 발생한 공인 IP를 대상으로 하며, 보호 대상·관리자 본인 IP와 루프백·링크 로컬·예약 주소는 거부합니다.
+          사설 IP는 허용 범위({data?.web_private_ranges?.join(', ') || '없음'})에 있을 때만 가능합니다. 테스트·문서용 IP는 조회 전용입니다.
         </p>
       </section>
 
@@ -329,7 +396,7 @@ function Manager({ username, onLogout, onDenied }) {
           <div className="admin-table">
             <table className="log">
               <thead>
-                <tr><th>시각</th><th>작업</th><th>대상 IP</th><th>수행</th><th>실행 결과</th><th>UFW 전 → 후</th><th>비고</th></tr>
+                <tr><th>시각</th><th>작업</th><th>대상 IP</th><th>수행</th><th>실행 결과</th><th>상태 전 → 후</th><th>비고</th></tr>
               </thead>
               <tbody>
                 {data.history.map((a) => (
@@ -340,17 +407,20 @@ function Manager({ username, onLogout, onDenied }) {
                     <td>{a.requested_by || <span className="muted">자동 대응</span>}</td>
                     <td><Badge tone={STATUS_TONE[a.execution_status]}>{STATUS_LABEL[a.execution_status] ?? a.execution_status}</Badge></td>
                     <td>{a.ufw_before_result ? `${UFW_SHORT[a.ufw_before_result]} → ${UFW_SHORT[a.ufw_after_result]}` : <span className="muted">별도 검증 기록</span>}</td>
-                    <td>{a.failure_kind ? `${FAILURE[a.failure_kind] ?? a.failure_kind}: ` : ''}{a.failure_reason}</td>
+                    <td>
+                      {a.failure_kind ? `${FAILURE[a.failure_kind] ?? a.failure_kind}: ` : ''}{a.failure_reason}
+                      {a.http_check_status != null && <span className="sub">공격 환경 HTTP {a.http_check_status} · {HTTP_CHECK[a.http_check_result] ?? a.http_check_result}</span>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-        <p className="note">명령 실행 성공과 Kali SSH 재접속 결과는 별개의 검증 항목입니다.</p>
+        <p className="note">명령 실행 성공과 Kali SSH 재접속·HTTP 응답(403/200) 확인 결과는 별개의 검증 항목입니다.</p>
       </section>
 
-      {pending && <ConfirmDialog pending={pending} port={data.blocked_port} onCancel={() => setPending(null)} onConfirm={() => run(pending)} />}
+      {pending && <ConfirmDialog pending={pending} port={SCOPE[ACTIONS[pending.action].scope].port(data)} onCancel={() => setPending(null)} onConfirm={() => run(pending)} />}
     </div>
   );
 }

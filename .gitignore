@@ -10,3 +10,6 @@ dist/
 
 .vscode/
 .idea/
+
+# Local RESPONSE_* overrides (backend/config/response_overrides.py); never committed.
+.response-overrides.env

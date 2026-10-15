@@ -1,0 +1,199 @@
+#!/usr/bin/python3 -I
+"""mini-soc Nginx 8080 web block helper — install on the victim as root:root 0755 at
+/usr/local/sbin/mini-soc-webblock. Run only through sudo (see sudoers-mini-soc-web.example):
+
+    mini-soc-webblock status          print the blocklist (one "deny <ip>;" line per blocked IP)
+    mini-soc-webblock block <ip>      add "deny <ip>;" then nginx -t and reload
+    mini-soc-webblock unblock <ip>    remove it then nginx -t and reload
+
+Any validated IP is supported; the helper checks everything itself instead of trusting the caller:
+- exactly one of the three operations and one canonical IP; no shell, no paths, no other arguments
+- block: never loopback, link-local, reserved, multicast or unspecified; a private address only inside
+  PRIVATE_ALLOWED (absent = none); never anything in PROTECTED (missing file = refuse to block)
+- it runs as root, and the helper, nginx, systemctl, the blocklist and the two lists are root-owned,
+  not group/world-writable and not symlinks
+The blocklist is included only in the Nginx 8080 server block. Apache 80, Juice Shop 3000 and the
+existing Cloudflare real-IP settings are never touched. A failed `nginx -t` or reload restores the
+previous file. stderr never starts with "sudo:" so Django can tell sudo refusals apart.
+"""
+import fcntl
+import ipaddress
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+
+BLOCKLIST = '/etc/nginx/mini-soc/web-blocklist.conf'
+PROTECTED = '/etc/mini-soc/web-protected.txt'
+PRIVATE_ALLOWED = '/etc/mini-soc/web-private-allowed.txt'
+LOCK = '/run/mini-soc-webblock.lock'
+NGINX = '/usr/sbin/nginx'
+SYSTEMCTL = '/usr/bin/systemctl'
+TRUSTED_UID = 0
+MAX_ENTRIES = 1000
+HEADER = '# mini-soc web blocklist (Nginx 8080). Managed by mini-soc-webblock; do not edit by hand.\n'
+ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C'}
+
+
+def fail(code, message):
+    print(f'mini-soc-webblock: {message}', file=sys.stderr)
+    sys.exit(code)
+
+
+def require_trusted(path, required=True):
+    """The path must be owned by root, not group/world-writable and not a symlink."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        if required:
+            fail(7, f'{path} is missing')
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        fail(7, f'{path} is a symlink; refusing to use it')
+    if st.st_uid != TRUSTED_UID or st.st_mode & 0o022:
+        fail(7, f'{path} must be owned by root and not group/world-writable')
+    return True
+
+
+def never_blockable(ip):
+    return ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+
+
+def parse_ip(raw):
+    try:
+        ip = ipaddress.ip_address(raw)
+    except ValueError:
+        fail(2, f'invalid IP {raw!r}')
+    if str(ip) != raw:
+        fail(2, f'IP must be in canonical form ({ip})')
+    return ip
+
+
+def read_blocklist():
+    """Blocked IPs in file order. Unknown content is refused rather than rewritten."""
+    if not require_trusted(BLOCKLIST, required=False):
+        return []
+    try:
+        with open(BLOCKLIST, encoding='ascii') as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        fail(3, f'cannot read {BLOCKLIST}: {exc}')
+    ips = []
+    for number, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if not (line.startswith('deny ') and line.endswith(';')):
+            fail(3, f'{BLOCKLIST} line {number} is not "deny <ip>;"; refusing to change it')
+        try:
+            ips.append(ipaddress.ip_address(line[5:-1].strip()))
+        except ValueError:
+            fail(3, f'{BLOCKLIST} line {number} has an invalid IP; refusing to change it')
+    return ips
+
+
+def read_networks(path, required):
+    """IPs/CIDRs, one per line, '#' comments. A missing required list or any bad entry refuses the block."""
+    if not require_trusted(path, required):
+        return []
+    try:
+        with open(path, encoding='utf-8') as f:
+            entries = [e.split('#', 1)[0].strip() for e in f]
+    except (OSError, UnicodeDecodeError) as exc:
+        fail(3, f'cannot read {path}: {exc}; refusing to block')
+    networks = []
+    for entry in filter(None, entries):
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            fail(3, f'invalid entry {entry!r} in {path}; refusing to block')
+    return networks
+
+
+def check_block_allowed(ip):
+    if never_blockable(ip):
+        fail(6, f'{ip} is a loopback, link-local, reserved, multicast or unspecified address; refusing to block')
+    if not ip.is_global:
+        lab = [n for n in read_networks(PRIVATE_ALLOWED, required=False)
+               if n.is_private and not never_blockable(n.network_address)]
+        if not ip.is_private or not any(ip.version == n.version and ip in n for n in lab):
+            fail(6, f'{ip} is not a public address and not in {PRIVATE_ALLOWED}; refusing to block')
+    match = next((n for n in read_networks(PROTECTED, required=True) if ip.version == n.version and ip in n), None)
+    if match:
+        fail(6, f'{ip} is protected ({match}); refusing to block')
+
+
+def run(argv):
+    return subprocess.run(argv, capture_output=True, text=True, env=ENV, timeout=20, check=False)
+
+
+def write_blocklist(ips):
+    """Replace the file atomically, validate with nginx -t, reload; restore the old file on any failure."""
+    directory = os.path.dirname(BLOCKLIST)
+    try:
+        with open(BLOCKLIST, encoding='ascii') as f:
+            previous = f.read()
+    except FileNotFoundError:
+        previous = HEADER
+
+    def replace(text):
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix='.web-blocklist.')
+        try:
+            with os.fdopen(fd, 'w', encoding='ascii') as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, BLOCKLIST)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+
+    replace(HEADER + ''.join(f'deny {ip};\n' for ip in ips))
+    test = run([NGINX, '-t'])
+    if test.returncode != 0:
+        replace(previous)
+        fail(4, f'nginx -t failed; previous blocklist restored: {test.stderr.strip()[-500:]}')
+    reload = run([SYSTEMCTL, 'reload', 'nginx'])
+    if reload.returncode != 0:
+        replace(previous)
+        run([SYSTEMCTL, 'reload', 'nginx'])
+        fail(5, f'nginx reload failed; previous blocklist restored: {reload.stderr.strip()[-500:]}')
+
+
+def main(argv):
+    if not (argv == ['status'] or (len(argv) == 2 and argv[0] in ('block', 'unblock'))):
+        fail(2, 'usage: mini-soc-webblock status | block <ip> | unblock <ip>')
+    if os.geteuid() != TRUSTED_UID:
+        fail(7, 'must run as root (through sudo)')
+    for path in (os.path.realpath(__file__), NGINX, SYSTEMCTL, os.path.dirname(BLOCKLIST), os.path.dirname(PROTECTED)):
+        require_trusted(path)
+    if argv == ['status']:
+        sys.stdout.write(HEADER + ''.join(f'deny {ip};\n' for ip in read_blocklist()))
+        return
+    operation, ip = argv[0], parse_ip(argv[1])
+    os.umask(0o022)
+    with open(LOCK, 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        ips = read_blocklist()
+        if operation == 'block':
+            check_block_allowed(ip)
+            if ip in ips:
+                print(f'{ip} already blocked')
+                return
+            if len(ips) >= MAX_ENTRIES:
+                fail(8, f'blocklist already has {MAX_ENTRIES} entries; refusing to grow it')
+            write_blocklist(ips + [ip])
+            print(f'{ip} blocked')
+        else:
+            if ip not in ips:
+                print(f'{ip} not blocked')
+                return
+            write_blocklist([i for i in ips if i != ip])
+            print(f'{ip} unblocked')
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

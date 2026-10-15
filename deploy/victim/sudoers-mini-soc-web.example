@@ -1,0 +1,8 @@
+# /etc/sudoers.d/mini-soc-web — install with: sudo visudo -f /etc/sudoers.d/mini-soc-web
+# Only the root-owned fixed helper; never a shell, ufw, nginx, tee or any other command.
+# The IP argument is open here and validated by the helper itself (operation, canonical IP,
+# address class, protected list, trusted paths). Existing UFW (22/tcp) sudoers lines are unchanged.
+Defaults!/usr/local/sbin/mini-soc-webblock env_reset, !setenv
+mini-soc-response ALL=(root) NOPASSWD: /usr/local/sbin/mini-soc-webblock status
+mini-soc-response ALL=(root) NOPASSWD: /usr/local/sbin/mini-soc-webblock block *
+mini-soc-response ALL=(root) NOPASSWD: /usr/local/sbin/mini-soc-webblock unblock *

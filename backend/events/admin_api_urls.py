@@ -14,4 +14,7 @@ urlpatterns = [
     path('threats/block/', admin_api.threat_block_view, name='admin-panel-threat-block'),
     path('threats/unblock/', admin_api.threat_unblock_view, name='admin-panel-threat-unblock'),
     path('ufw-status/', admin_api.ufw_status_view, name='admin-panel-ufw-status'),
+    path('web-status/', admin_api.web_status_view, name='admin-panel-web-status'),
+    path('threats/web-block/', admin_api.threat_web_block_view, name='admin-panel-threat-web-block'),
+    path('threats/web-unblock/', admin_api.threat_web_unblock_view, name='admin-panel-threat-web-unblock'),
 ]

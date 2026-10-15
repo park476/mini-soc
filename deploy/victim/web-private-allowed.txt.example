@@ -1,0 +1,3 @@
+# /etc/mini-soc/web-private-allowed.txt - OPTIONAL. Absent = private addresses are never web-blocked.
+# Install only for an explicitly approved private-network attack lab, e.g.:
+# 172.22.16.0/24

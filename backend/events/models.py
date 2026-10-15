@@ -217,3 +217,35 @@ class ManualBlockRecord(models.Model):
     requested_at = models.DateTimeField(auto_now_add=True)
     executed_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+
+
+class WebBlockRecord(models.Model):
+    """Audit of one administrator-requested Nginx web (8080) block or unblock (events/web_block.py).
+    execution_status covers only the helper command; the blocklist re-check and the attacker's
+    observed HTTP status (403 while blocked, 200 after unblock) are separate verification items."""
+    OPERATIONS = [('block', 'block'), ('unblock', 'unblock')]
+    STATE_RESULTS = ResponseVerification.UFW_RESULTS  # present / absent / unchecked in the Nginx blocklist
+    HTTP_CHECK_RESULTS = [('success', 'success'), ('failed', 'failed'), ('unchecked', 'unchecked')]
+
+    operation = models.CharField(max_length=7, choices=OPERATIONS)
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    requested_by_username = models.CharField(max_length=150)
+    target_ip = models.GenericIPAddressField(null=True, blank=True)
+    execution_status = models.CharField(max_length=9, choices=UnblockRecord.EXECUTION_STATUSES, default='failed')
+    failure_kind = models.CharField(max_length=20, blank=True)
+    failure_reason = models.TextField(blank=True)
+    victim = models.TextField(blank=True)
+    command = models.TextField(blank=True)
+    execution_result = models.TextField(blank=True)
+    state_before_result = models.CharField(max_length=9, choices=STATE_RESULTS, default='unchecked')
+    state_before_evidence = models.TextField(blank=True)
+    state_after_result = models.CharField(max_length=9, choices=STATE_RESULTS, default='unchecked')
+    state_after_evidence = models.TextField(blank=True)
+    # Entered from a real request made on the attacker host; never inferred from the command result.
+    http_check_status = models.PositiveSmallIntegerField(null=True, blank=True)
+    http_check_result = models.CharField(max_length=9, choices=HTTP_CHECK_RESULTS, default='unchecked')
+    http_check_evidence = models.TextField(blank=True)
+    http_checked_at = models.DateTimeField(null=True, blank=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    executed_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)

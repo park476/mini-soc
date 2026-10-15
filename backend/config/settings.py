@@ -155,3 +155,14 @@ RESPONSE_MANUAL_BLOCK_EXECUTE = os.environ.get('RESPONSE_MANUAL_BLOCK_EXECUTE', 
 # Exact IPs (no CIDR) an administrator may block/unblock from the panel. Must match what the victim's
 # sudoers actually permits; every other IP is view-only. Empty = the whole panel is view-only.
 RESPONSE_MANUAL_TARGETS = os.environ.get('RESPONSE_MANUAL_TARGETS', '')
+
+# Manual admin Nginx web (8080) block / unblock (events/web_block.py). A fourth, separate opt-in.
+RESPONSE_WEB_BLOCK_EXECUTE = os.environ.get('RESPONSE_WEB_BLOCK_EXECUTE', '').strip().lower() == 'true'
+# Any alerted public IP may be web-blocked. Private lab networks (CIDRs) only when listed here; empty = none.
+RESPONSE_WEB_PRIVATE_RANGES = os.environ.get('RESPONSE_WEB_PRIVATE_RANGES', '')
+
+# Git-excluded overrides for RESPONSE_ALLOWLIST / RESPONSE_WEB_* without recreating the container.
+# A broken file turns every block switch off (config/response_overrides.py).
+from . import response_overrides  # noqa: E402
+RESPONSE_OVERRIDES_FILE = BASE_DIR / '.response-overrides.env'
+response_overrides.apply(globals(), RESPONSE_OVERRIDES_FILE)

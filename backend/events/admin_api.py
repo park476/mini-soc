@@ -3,6 +3,7 @@
 Plain Django views (not DRF) so CsrfViewMiddleware protects every POST, including login.
 Every data view re-checks is_active and is_superuser on the server; the React UI is not trusted.
 Unblocking only passes a ResponseRecord id to events/unblock.py; no IP or command is accepted.
+IP actions (SSH and Nginx web) accept only an IP, re-validated server-side; never a command.
 """
 import json
 from functools import wraps
@@ -22,14 +23,15 @@ from .ip_actions import (
     BLOCK_SETTING, ActionRefused, approved_targets, is_fixture_ip, latest_block, manual_block, read_only_reason,
     read_ufw_states, unblock_ip,
 )
-from .models import Alert, Incident, ManualBlockRecord, ResponseRecord, RiskResult, UnblockRecord
+from .models import Alert, Incident, ManualBlockRecord, ResponseRecord, RiskResult, UnblockRecord, WebBlockRecord
 from .response import BLOCKED_PORT, ResponseConfigError
 from .unblock import EXECUTE_SETTING, check_block_state, unblock_response
+from . import web_block
 
 HISTORY_LIMIT = 100
 # HTTP status for an unblock attempt that did not end as succeeded/skipped.
 FAILURE_STATUS = {'not_eligible': 409, 'invalid_ip': 409, 'config': 503, 'fixture': 403, 'not_approved': 403,
-                  'not_detected': 403, 'allowlisted': 403}
+                  'not_detected': 403, 'allowlisted': 403, 'not_public': 403, 'self': 403}
 
 
 def is_panel_admin(user):
@@ -167,7 +169,7 @@ def _action(kind, r):
     """One row of block/unblock history. kind: auto_block | manual_block | unblock."""
     auto = kind == 'auto_block'
     return {
-        'kind': kind, 'id': r.pk, 'target_ip': r.target_ip,
+        'kind': kind, 'scope': 'ssh', 'id': r.pk, 'target_ip': r.target_ip,
         'at': (r.executed_at or r.created_at) if auto else r.requested_at,
         'requested_by': '' if auto else r.requested_by_username,
         'execution_status': r.execution_status, 'failure_kind': '' if auto else r.failure_kind,
@@ -177,14 +179,26 @@ def _action(kind, r):
     }
 
 
+def _web_action(r):
+    """One row of Nginx web block/unblock history, in the same shape as _action."""
+    return {
+        'kind': f'web_{r.operation}', 'scope': 'web', 'id': r.pk, 'target_ip': r.target_ip, 'at': r.requested_at,
+        'requested_by': r.requested_by_username, 'execution_status': r.execution_status,
+        'failure_kind': r.failure_kind, 'failure_reason': r.failure_reason, 'command': r.command,
+        'ufw_before_result': r.state_before_result, 'ufw_after_result': r.state_after_result,
+        'http_check_status': r.http_check_status, 'http_check_result': r.http_check_result,
+    }
+
+
 def _history():
     rows = [_action('auto_block', r) for r in ResponseRecord.objects.filter(action='block_ssh').order_by('-id')[:HISTORY_LIMIT]]
     rows += [_action('manual_block', r) for r in ManualBlockRecord.objects.order_by('-id')[:HISTORY_LIMIT]]
     rows += [_action('unblock', r) for r in UnblockRecord.objects.order_by('-id')[:HISTORY_LIMIT]]
+    rows += [_web_action(r) for r in WebBlockRecord.objects.order_by('-id')[:HISTORY_LIMIT]]
     return sorted(rows, key=lambda a: a['at'], reverse=True)[:HISTORY_LIMIT]
 
 
-def _threats():
+def _threats(requester_ip=None):
     """One row per alerted source IP, built only from stored records. No current firewall state here."""
     history = _history()
     risks, incidents, rules = {}, {}, {}
@@ -198,6 +212,7 @@ def _threats():
     for row in Alert.objects.values('source_ip').annotate(alert_count=Count('id'), latest=Max('occurred_at')):
         ip = row['source_ip']
         refused = read_only_reason(ip)
+        web_refused = web_block.refusal(ip, 'block', requester_ip)
         block = latest_block(ip)
         threats.append({
             'ip': ip, 'is_fixture': is_fixture_ip(ip), 'rule_types': sorted(rules.get(ip, [])),
@@ -208,6 +223,10 @@ def _threats():
             # History only: whether this system ever blocked the IP. Never the current UFW state.
             'has_past_block': block is not None,
             'last_action': next((a for a in history if a['target_ip'] == ip), None),
+            # Nginx 8080 web block: any alerted IP passing web_block.refusal; current state comes from web-status.
+            'web_actionable': not web_refused, 'web_read_only_kind': web_refused[0] if web_refused else '',
+            'web_read_only_reason': web_refused[1] if web_refused else '',
+            'web_unblock_allowed': not web_block.refusal(ip, 'unblock'),
         })
     return threats, history
 
@@ -215,17 +234,25 @@ def _threats():
 @superuser_required
 @require_GET
 def threats_view(request):
-    threats, history = _threats()
+    threats, history = _threats(request.META.get('REMOTE_ADDR'))
     try:
         targets, config_error = sorted(str(ip) for ip in approved_targets()), ''
     except ResponseConfigError as exc:
         targets, config_error = [], str(exc)
+    try:
+        web_private, web_config_error = [str(n) for n in web_block.private_ranges()], ''
+    except ResponseConfigError as exc:
+        web_private, web_config_error = [], str(exc)
     return JsonResponse({
         'threats': threats, 'history': history, 'blocked_port': f'{BLOCKED_PORT}/tcp',
         'unblock_enabled': getattr(settings, EXECUTE_SETTING, False) is True,
         'manual_block_enabled': getattr(settings, BLOCK_SETTING, False) is True,
         'approved_targets': targets, 'config_error': config_error,
-        'settings': {'unblock': EXECUTE_SETTING, 'manual_block': BLOCK_SETTING, 'targets': 'RESPONSE_MANUAL_TARGETS'},
+        'web_port': f'{web_block.WEB_PORT}/tcp', 'web_block_enabled': getattr(settings, web_block.EXECUTE_SETTING, False) is True,
+        'web_private_ranges': web_private, 'web_config_error': web_config_error,
+        'overrides_error': getattr(settings, 'RESPONSE_OVERRIDES_ERROR', ''),
+        'settings': {'unblock': EXECUTE_SETTING, 'manual_block': BLOCK_SETTING, 'targets': 'RESPONSE_MANUAL_TARGETS',
+                     'web_block': web_block.EXECUTE_SETTING, 'web_private_ranges': web_block.PRIVATE_SETTING},
     })
 
 
@@ -258,17 +285,20 @@ def _ip_action(request, perform, done_state, done_outcome, skipped_outcome):
     except ActionRefused as exc:
         return JsonResponse({'outcome': 'refused', 'failure_kind': exc.kind, 'detail': exc.reason},
                             status=FAILURE_STATUS.get(exc.kind, 403))
+    if isinstance(audit, WebBlockRecord):
+        action, state, evidence = _web_action(audit), audit.state_after_result, audit.state_after_evidence
+    else:
+        action = _action('unblock' if isinstance(audit, UnblockRecord) else 'manual_block', audit)
+        state, evidence = audit.ufw_after_result, audit.ufw_after_evidence
     if audit.execution_status == 'skipped':
         outcome, status = skipped_outcome, 200
-    elif audit.execution_status == 'succeeded' and audit.ufw_after_result == done_state:
+    elif audit.execution_status == 'succeeded' and state == done_state:
         outcome, status = done_outcome, 200
     else:
         outcome, status = 'failed', FAILURE_STATUS.get(audit.failure_kind, 502)
-    kind = 'unblock' if isinstance(audit, UnblockRecord) else 'manual_block'
     return JsonResponse({
         'outcome': outcome, 'detail': audit.failure_reason, 'failure_kind': audit.failure_kind,
-        'action': _action(kind, audit), 'ufw_state': audit.ufw_after_result,
-        'ufw_evidence': audit.ufw_after_evidence, 'checked_at': audit.completed_at,
+        'action': action, 'ufw_state': state, 'ufw_evidence': evidence, 'checked_at': audit.completed_at,
     }, status=status)
 
 
@@ -284,3 +314,31 @@ def threat_block_view(request):
 @require_POST
 def threat_unblock_view(request):
     return _ip_action(request, unblock_ip, 'absent', 'unblocked', 'already_unblocked')
+
+
+# ---- Nginx 8080 web block (events/web_block.py) -----------------------------------------------
+
+@superuser_required
+@csrf_protect
+@require_POST
+def web_status_view(request):
+    """One read-only helper `status`; states only for real (non-fixture) alerted IPs."""
+    ips = [ip for ip in Alert.objects.values_list('source_ip', flat=True).distinct() if not is_fixture_ip(ip)]
+    states, failure_kind, detail = web_block.read_web_states(ips)
+    return JsonResponse({'states': states, 'failure_kind': failure_kind, 'detail': detail, 'checked_at': timezone.now()})
+
+
+@superuser_required
+@csrf_protect
+@require_POST
+def threat_web_block_view(request):
+    requester_ip = request.META.get('REMOTE_ADDR')
+    return _ip_action(request, lambda ip, user: web_block.web_action(ip, 'block', user, requester_ip=requester_ip),
+                      'present', 'blocked', 'already_blocked')
+
+
+@superuser_required
+@csrf_protect
+@require_POST
+def threat_web_unblock_view(request):
+    return _ip_action(request, lambda ip, user: web_block.web_action(ip, 'unblock', user), 'absent', 'unblocked', 'already_unblocked')

@@ -199,3 +199,61 @@ PRD와 02·03·04 설계 문서 본문은 수정하지 않았다. 이 기록이 
 - 피해 서버 sudoers는 넓히지 않는다. 첫 조치 대상은 192.168.1.4 하나다.
 - 화면과 문구는 SSH(22/tcp) 차단으로만 표시하고 웹 접근 차단으로 표현하지 않는다.
 - 이번 작업에서 미니 PC에 차단·해제·상태 조회 명령을 보내지 않았다. 테스트는 fake executor만 사용했다.
+
+## 2026-10-15 — 관리자 수동 웹(Nginx 8080) 차단·해제 (사용자 최신 결정)
+
+근거: 사용자의 최신 명시적 승인. 아래 항목은 같은 날 이전 기록과 기존 문서보다 우선한다. 앞선 결정은 삭제하지 않고 이력으로 남긴다.
+
+### 앞선 기록·기존 문서와 달라지는 점
+
+| 기존 | 최신 결정 |
+|---|---|
+| 10-12: 화면과 문구는 SSH(22/tcp) 차단으로만 표시하고 웹 접근 차단으로 표현하지 않음 | 관리자 패널에 웹 접근 차단·해제를 추가. SSH 차단과 웹 차단은 별도 열·버튼·이력으로 구분 표시 |
+| 10-12: 미니 PC Nginx:8080은 변경하지 않음 | 8080 server 블록에 웹 차단 목록 include 한 줄만 추가(사용자 별도 승인 후 직접 설치). Apache 80, Juice Shop 3000, 기존 Cloudflare real-IP 설정은 변경하지 않음 |
+| PRD: 대응 1종 = SSH 공격자 IP 자동 차단 | 자동 대응은 그대로 SSH 1종. 웹 차단은 관리자 수동 기능으로만 추가하며 자동 웹 차단은 구현하지 않음 |
+| 10-12: sudoers 넓히지 않음, 첫 조치 대상 1개 | 기존 UFW sudoers 줄은 그대로. 웹 헬퍼용 줄을 정확한 인자로만 별도 추가 |
+
+### 확정 내용
+
+- 차단 방식: Cloudflare Tunnel 경유 요청은 미니 PC에 cloudflared에서 들어오므로 UFW로 구분할 수 없다. Nginx가 real-IP로 복원한 클라이언트 주소에 `deny <ip>;`(403)를 8080 server 블록에서만 적용한다.
+- 실행 경로: 관제 서버 → 기존 SSH 계정 `mini-soc-response` → `sudo -n /usr/local/sbin/mini-soc-webblock status | block <ip> | unblock <ip>`. 헬퍼는 root 소유 고정 스크립트이며 IP 검증, 보호 목록 확인, `nginx -t` 실패 시 원복 후 reload를 수행한다. 무제한 sudo 없음.
+- 조치 가능 IP(웹 차단): Alert가 있는 출발지 IP이고, `RESPONSE_WEB_TARGETS`에 정확한 IP로 등록되었으며(CIDR 불가), 공인(global) 주소이고 `RESPONSE_ALLOWLIST`(보호 대상)에 없는 경우만. 사설·루프백·링크 로컬·예약·멀티캐스트 주소와 문서·테스트 대역은 거부한다. 해제는 잘못 등록된 IP도 풀 수 있도록 공인·보호 검사를 생략하되 승인 목록·경보 조건은 유지한다.
+- **시연 단계 제한:** 2026-10-15 실장비 시연의 웹 차단 대상은 `118.235.65.6` 한 개다. 구조(승인 목록·헬퍼·이력)는 대상 수에 의존하지 않아 이후 동적 IP 대응으로 확장할 수 있다. 자동 웹 차단은 이번 범위가 아니다.
+- 보호 대상: 학교 관제 PC 172.18.20.65, 피해 미니 PC 172.18.20.161, 학교 WSL 172.29.176.40, 정체 미확인 221.165.139.110(확인 전까지 보호). 학교 공인 IP는 미확인이며 확인되면 추가한다. Django `RESPONSE_ALLOWLIST`와 미니 PC `/etc/mini-soc/web-protected.txt` 양쪽에 둔다.
+- 안전 스위치: `RESPONSE_WEB_BLOCK_EXECUTE`(신규, 기본 False). 기존 세 스위치와 서로를 켜지 않는다.
+- 설정 반영: 컨테이너 재생성 없이 Git 제외 파일 `backend/.response-overrides.env`에서 `RESPONSE_ALLOWLIST`, `RESPONSE_WEB_BLOCK_EXECUTE`, `RESPONSE_WEB_TARGETS`만 읽는다. 비밀번호·키·호스트는 넣을 수 없다. 파일 형식 오류 시 모든 차단 스위치(자동·수동 SSH·웹)를 끄고 패널에 오류를 표시한다.
+- 기록: 신규 `WebBlockRecord`(추가형 migration 0008). 기존 ResponseRecord·ManualBlockRecord·UnblockRecord는 수정하지 않는다. 헬퍼 명령 성공, 실행 후 차단 목록 재확인, 공격 환경에서 관찰한 HTTP 상태(차단 후 403, 해제 후 200)는 별개 항목이며 HTTP 결과는 `record_web_check` 명령으로 실제 관찰 후 입력한다.
+- 임의 Incident를 만들지 않으며 웹 차단은 `run_analysis`·`run_responses`를 호출하지 않는다.
+- 미니 PC sudoers 변경, 헬퍼 설치, Nginx 설정 변경·reload, Docker 재시작·재생성, 실제 웹 차단 실행은 각각 사용자 별도 승인 후 진행한다. 이 기록 시점에는 어느 것도 수행하지 않았다.
+
+## 2026-10-15 — 웹 차단 대상: 고정 IP에서 경보 기반 동적 IP로 변경 (사용자 최신 결정)
+
+근거: 사용자의 최신 명시적 지시. 바로 앞 기록(같은 날)의 아래 항목을 대체한다. 앞 기록은 이력으로 남긴다.
+
+| 앞 기록 | 최신 결정 |
+|---|---|
+| 웹 차단 조치 가능 IP는 `RESPONSE_WEB_TARGETS`에 정확히 등록된 IP만. 시연 단계 제한으로 `118.235.65.6` 한 개 | `RESPONSE_WEB_TARGETS` 제거. Django Alert가 발생한 임의의 정상 공인 IP를 superuser가 패널에서 선택해 차단·해제. IP 직접 입력·경보 없는 IP 차단 기능은 없음 |
+| sudoers에 `block 118.235.65.6` 등 정확한 인자 줄 | sudoers는 root 소유 고정 헬퍼의 `status`, `block *`, `unblock *`만 허용. 명령·IP 형식·주소 종류·보호 목록·실행 파일·파일 경로는 헬퍼가 자체 검증 |
+| 사설 IP는 차단 불가 | 기본 거부 유지. 사설 IP 실습은 Django `RESPONSE_WEB_PRIVATE_RANGES`와 미니 PC `/etc/mini-soc/web-private-allowed.txt` 양쪽에 명시한 사설 범위만 허용(기본 비어 있음). 보호 목록이 항상 우선 |
+
+추가 확정:
+- 차단 거부 대상: 보호 목록(`RESPONSE_ALLOWLIST`: 172.18.20.65, 172.18.20.161, 172.29.176.40, 221.165.139.110), 요청한 관리자의 접속 주소, 루프백·링크 로컬·예약·멀티캐스트·미지정·문서용 주소, CGNAT 등 공인이 아닌 주소(허용 범위 밖).
+- superuser 인증, CSRF, 확인 대화상자, WebBlockRecord 이력, HTTP 403/200 별도 검증 기록은 유지한다.
+- 자동 웹 차단은 구현하지 않는다. SSH 22번 차단·해제, Apache 80, Juice Shop 3000, Cloudflare real-IP 처리는 변경하지 않는다.
+- migration 0008(신규 테이블 생성만)을 적용했다. 기존 테이블 행 수는 적용 전후 동일했다.
+- override 파일 `backend/.response-overrides.env`(Git 제외)를 만들어 보호 목록을 반영했다. `RESPONSE_WEB_BLOCK_EXECUTE=false` 상태이며 미니 PC 설치 승인 후 켠다.
+- 미니 PC sudoers, 헬퍼 설치, Nginx 설정·reload, 실제 차단은 아직 수행하지 않았다.
+
+## 2026-10-15 — 보호 목록 변경 (사용자 최신 결정)
+
+근거: 사용자의 최신 명시적 결정. 앞 기록의 "221.165.139.110은 정체 미확인이므로 보호" 항목을 대체한다.
+
+| 주소 | 상태 |
+|---|---|
+| 172.18.20.65 | 보호 — 학교 관제 PC |
+| 172.18.20.161 | 보호 — 피해 미니 PC |
+| 172.29.176.40 | 보호 — 학교 WSL |
+| 119.194.231.131 | 보호 — 학교 WSL에서 확인한 공인 출구 IP (신규) |
+| 221.165.139.110 | 보호 해제 — Kali 공격 노트북의 당시 공인 IP. 웹 차단·해제 실증 완료(WebBlockRecord #5·#6) |
+
+웹 차단은 실제 Kali 환경에서 HTTP 200 → 403 → 200으로 검증되었다(사용자 확인). 해당 HTTP 결과는 아직 `record_web_check`로 DB에 기록되지 않았다.
