@@ -227,16 +227,27 @@ class ManualBlockRecord(models.Model):
 
 
 class WebBlockRecord(models.Model):
-    """Audit of one administrator-requested Nginx web (8080) block or unblock (events/web_block.py).
+    """Audit of one Nginx web (8080) block or unblock (events/web_block.py), manual or automatic.
     execution_status covers only the helper command; the blocklist re-check and the attacker's
-    observed HTTP status (403 while blocked, 200 after unblock) are separate verification items."""
+    observed HTTP status (403 while blocked, 200 after unblock) are separate verification items.
+    origin='auto' rows are created by the PB-01 playbook with no administrator (requested_by null);
+    trigger_alert links the nginx_scan Alert that fired it and keeps the playbook idempotent per Alert;
+    expires_at is the TTL after which the playbook auto-unblocks its own block."""
     OPERATIONS = [('block', 'block'), ('unblock', 'unblock')]
+    ORIGINS = [('manual', 'manual'), ('auto', 'auto')]
     STATE_RESULTS = ResponseVerification.UFW_RESULTS  # present / absent / unchecked in the Nginx blocklist
     HTTP_CHECK_RESULTS = [('success', 'success'), ('failed', 'failed'), ('unchecked', 'unchecked')]
 
     operation = models.CharField(max_length=7, choices=OPERATIONS)
-    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    origin = models.CharField(max_length=6, choices=ORIGINS, default='manual')
+    # Null for automatic rows; a user for manual admin-panel actions.
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+',
+                                     null=True, blank=True)
     requested_by_username = models.CharField(max_length=150)
+    # The nginx_scan Alert that triggered an automatic action; keeps PB-01 idempotent per Alert.
+    trigger_alert = models.ForeignKey(Alert, on_delete=models.PROTECT, related_name='+', null=True, blank=True)
+    # When an automatic block should be auto-unblocked (TTL). Null for manual actions and for unblocks.
+    expires_at = models.DateTimeField(null=True, blank=True)
     target_ip = models.GenericIPAddressField(null=True, blank=True)
     execution_status = models.CharField(max_length=9, choices=UnblockRecord.EXECUTION_STATUSES, default='failed')
     failure_kind = models.CharField(max_length=20, blank=True)

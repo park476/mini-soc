@@ -9,9 +9,10 @@ turned off so no block command can be sent. Unblocking is left as it was.
 from pathlib import Path
 
 ALLOWED_KEYS = ('RESPONSE_ALLOWLIST', 'RESPONSE_WEB_BLOCK_EXECUTE', 'RESPONSE_WEB_PRIVATE_RANGES',
-                'RESPONSE_SSH_PRIVATE_RANGES', 'RESPONSE_MANUAL_BLOCK_EXECUTE')
-BOOLEAN_KEYS = ('RESPONSE_WEB_BLOCK_EXECUTE', 'RESPONSE_MANUAL_BLOCK_EXECUTE')
-BLOCK_SWITCHES = ('RESPONSE_EXECUTE', 'RESPONSE_MANUAL_BLOCK_EXECUTE', 'RESPONSE_WEB_BLOCK_EXECUTE')
+                'RESPONSE_SSH_PRIVATE_RANGES', 'RESPONSE_MANUAL_BLOCK_EXECUTE', 'RESPONSE_AUTO_WEB_EXECUTE')
+BOOLEAN_KEYS = ('RESPONSE_WEB_BLOCK_EXECUTE', 'RESPONSE_MANUAL_BLOCK_EXECUTE', 'RESPONSE_AUTO_WEB_EXECUTE')
+BLOCK_SWITCHES = ('RESPONSE_EXECUTE', 'RESPONSE_MANUAL_BLOCK_EXECUTE', 'RESPONSE_WEB_BLOCK_EXECUTE',
+                  'RESPONSE_AUTO_WEB_EXECUTE')
 
 
 class OverrideError(Exception):
@@ -57,3 +58,24 @@ def apply(namespace, path):
         return
     namespace['RESPONSE_OVERRIDES_ERROR'] = ''
     namespace.update(values)
+
+
+def refresh():
+    """Re-read the override file onto the live Django settings. The long-lived run_analysis process
+    uses this each cycle so the auto-response switch can be toggled without restarting it. A broken
+    file turns every block switch off, exactly like startup. Keys absent from the file keep their
+    current value, so the demo keeps every managed key present in the file."""
+    from django.conf import settings
+    path = getattr(settings, 'RESPONSE_OVERRIDES_FILE', None)
+    if not path:
+        return
+    try:
+        values = load(path)
+    except OverrideError as exc:
+        for switch in BLOCK_SWITCHES:
+            setattr(settings, switch, False)
+        settings.RESPONSE_OVERRIDES_ERROR = str(exc)
+        return
+    settings.RESPONSE_OVERRIDES_ERROR = ''
+    for key, value in values.items():
+        setattr(settings, key, value)

@@ -277,3 +277,29 @@ PRD와 02·03·04 설계 문서 본문은 수정하지 않았다. 이 기록이 
 - override 허용 키에 `RESPONSE_SSH_PRIVATE_RANGES`, `RESPONSE_MANUAL_BLOCK_EXECUTE` 추가(컨테이너 재생성 없이 SSH 차단을 끌 수 있게).
 - 실증 네트워크: Kali 노트북은 현재 핫스팟 환경에서 미니 PC 22번에 직접 접근하지 못해 경로가 미확정이다. 공격 출발지는 관제 PC(172.18.20.65)와 달라야 하며 Cloudflare Tunnel을 거치지 않는 직접 TCP 22 경로가 필요하다.
 - 첫 실차단은 15분 복구 타이머를 계획한다. 미니 PC sudoers·실행기 설치, UFW 변경, 실제 SSH 차단은 아직 수행하지 않았다.
+
+## 2026-10-15 — PB-01: Nginx 스캔 자동 웹 차단 플레이북 (사용자 최신 결정)
+
+근거: 사용자의 최신 명시적 승인. 제한적 자동 대응 1종을 실제로 실행하는 것이 최우선 목표다. 기존 SSH 자동 대응(response.py, D13·D14) 계획은 삭제하지 않고 그대로 두며, 그 위에 웹 자동 대응을 추가한다.
+
+### 기존 문서와 달라지는 점
+
+| 기존 | 최신 결정 |
+|---|---|
+| 자동 대응 1종 = SSH 공격자 IP의 UFW 차단(검증 경로가 핫스팟에서 막힘) | 실제로 실행하는 자동 대응으로 **PB-01 Nginx 8080 웹 차단**을 추가. 검증된 경로(Kali 핫스팟 → Cloudflare Tunnel → Nginx 8080 → rsyslog → Django)를 사용 |
+| D16: 자동 해제 없음 | 공유 공인 IP 보호를 위해 **TTL 자동 해제(기본 10분)** 추가. SSH 쪽 자동 해제 없음 정책은 그대로 |
+
+### 확정 내용
+
+- 트리거: `nginx_scan` 경보만. `nginx_suspicious_path`와 `ssh_brute_force`는 PB-01 대상이 아니다.
+- 실행 주체: 기존 `run_analysis` 루프 안의 단계(events/web_auto.py). 관리자 버튼 없이 동작한다.
+- 대상 판단: 기존 `web_block.web_action`과 `address_policy`를 재사용. 보호 목록(RESPONSE_ALLOWLIST), 사설·루프백·링크로컬·예약·멀티캐스트·문서용 주소, 요청자 주소를 거부한다. 미니 PC 실행기(mini-soc-webblock)와 sudoers는 변경하지 않는다.
+- 안전 수치: 최신 경보 5분 이내만(활성화 직후 과거 경보 일괄 차단 금지), 시간당 자동 차단 최대 3건, 자동 차단 TTL 10분.
+- 스위치: 신규 `RESPONSE_AUTO_WEB_EXECUTE`(기본 False), 기존 스위치와 독립. 자동 차단 ON/OFF와 TTL 자동 해제를 분리한다 — 자동 해제는 `RESPONSE_WEB_BLOCK_EXECUTE`로 동작하므로 자동 차단을 꺼도 이미 차단된 IP의 TTL 해제가 계속된다. 둘 다 꺼도 관리자 수동 해제 경로가 남는다.
+- override 파일을 분석 주기마다 다시 읽어 컨테이너·프로세스 재시작 없이 ON/OFF가 반영된다(response_overrides.refresh). 파일 오류 시 모든 차단 스위치를 끈다.
+- 중복·경쟁·재시작 방지: 경보당 1회 처리(WebBlockRecord.trigger_alert), 처리 시 해당 Alert 행 잠금, 실행 전 차단 목록 재확인. 크래시로 기록 전 중단되면 다음 주기에 중복 규칙 대신 `skipped`로 기록한다.
+- 관리자가 수동 차단한 IP는 TTL 자동 해제가 건드리지 않는다(최신 차단이 자동 블록일 때만 해제).
+- 검증 3단계 분리 저장·표시: ① 명령 실행 결과(execution_status) ② Nginx 차단 목록 재확인(state_after_result) ③ 공격 장비의 실제 HTTP 403/200(record_web_check로 실제 관찰값 입력).
+- 화면: React 자동 대응 화면이 고정 "구현 완료" 대신 실제 활성 상태·실행 이력·검증 결과를 `/api/responses/web-auto/`에서 읽어 표시한다.
+- migration 0010(추가형): WebBlockRecord에 origin·trigger_alert·expires_at 추가, requested_by nullable. 기존 행과 기능은 보존한다.
+- 임의 Incident를 만들지 않으며 기존 웹 수동 차단·해제, SSH 수동 대응, UFW, DB, 네트워크 설정을 보존한다. 실제 활성화 전 사용자 승인을 받는다.

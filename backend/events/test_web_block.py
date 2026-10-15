@@ -307,6 +307,7 @@ class ResponseOverrideTests(SimpleTestCase):
                      f'RESPONSE_WEB_TARGETS={IP_A}\n'):
             ns = self.apply(text)
             self.assertTrue(ns['RESPONSE_OVERRIDES_ERROR'], text)
-            self.assertEqual([ns[s] for s in response_overrides.BLOCK_SWITCHES], [False, False, False], text)
+            self.assertEqual([ns[s] for s in response_overrides.BLOCK_SWITCHES],
+                             [False] * len(response_overrides.BLOCK_SWITCHES), text)
             self.assertTrue(ns['RESPONSE_UNBLOCK_EXECUTE'])
             self.assertEqual(ns['RESPONSE_ALLOWLIST'], '')

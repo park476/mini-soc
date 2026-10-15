@@ -105,11 +105,17 @@ def read_web_states(ips, executor=None):
     return {str(ip): 'present' if ipaddress.ip_address(str(ip)) in listed else 'absent' for ip in ips}, '', ''
 
 
-def web_action(raw_ip, operation, requested_by, executor=None, requester_ip=None):
-    """Block or unblock web access from one alerted IP. Always returns a saved WebBlockRecord."""
+def web_action(raw_ip, operation, requested_by=None, executor=None, requester_ip=None,
+               execute_setting=EXECUTE_SETTING, origin='manual', trigger_alert=None, expires_at=None):
+    """Block or unblock web access from one alerted IP. Always returns a saved WebBlockRecord.
+
+    Manual admin actions pass a user (requested_by) and the default execute_setting. The PB-01 playbook
+    passes requested_by=None, origin='auto', the triggering Alert and a TTL, and names its own switch so
+    automatic blocking is enabled independently of manual web blocking."""
     want = DONE_STATE[operation]
-    audit = WebBlockRecord(operation=operation, requested_by=requested_by,
-                           requested_by_username=requested_by.get_username())
+    audit = WebBlockRecord(operation=operation, origin=origin, trigger_alert=trigger_alert, expires_at=expires_at,
+                           requested_by=requested_by,
+                           requested_by_username=requested_by.get_username() if requested_by else origin)
 
     def done(kind, reason):
         audit.failure_kind, audit.failure_reason = kind, reason
@@ -126,7 +132,7 @@ def web_action(raw_ip, operation, requested_by, executor=None, requester_ip=None
     if refused:
         return done(*refused)
     try:
-        executor = _executor(EXECUTE_SETTING, executor)
+        executor = _executor(execute_setting, executor)
     except ActionRefused as exc:
         return done(exc.kind, exc.reason)
     audit.victim = executor.label

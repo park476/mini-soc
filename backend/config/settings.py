@@ -163,6 +163,17 @@ RESPONSE_WEB_BLOCK_EXECUTE = os.environ.get('RESPONSE_WEB_BLOCK_EXECUTE', '').st
 # Any alerted public IP may be web-blocked. Private lab networks (CIDRs) only when listed here; empty = none.
 RESPONSE_WEB_PRIVATE_RANGES = os.environ.get('RESPONSE_WEB_PRIVATE_RANGES', '')
 
+# PB-01: automatic Nginx web block of nginx_scan attackers (events/web_auto.py). A fifth, separate opt-in,
+# default False; enables only the background BLOCK playbook. TTL auto-unblock and manual actions keep
+# using RESPONSE_WEB_BLOCK_EXECUTE, so turning this off never strands an already auto-blocked IP.
+RESPONSE_AUTO_WEB_EXECUTE = os.environ.get('RESPONSE_AUTO_WEB_EXECUTE', '').strip().lower() == 'true'
+# Only nginx_scan Alerts newer than this many seconds are auto-block candidates (no bulk block of old alerts).
+RESPONSE_AUTO_WEB_MAX_ALERT_AGE = int(os.environ.get('RESPONSE_AUTO_WEB_MAX_ALERT_AGE', '300'))
+# At most this many automatic web blocks per rolling hour (shared public-IP safety cap).
+RESPONSE_AUTO_WEB_HOURLY_LIMIT = int(os.environ.get('RESPONSE_AUTO_WEB_HOURLY_LIMIT', '3'))
+# An automatic web block is auto-unblocked this many seconds after it is applied.
+RESPONSE_AUTO_WEB_TTL = int(os.environ.get('RESPONSE_AUTO_WEB_TTL', '600'))
+
 # Git-excluded overrides for RESPONSE_ALLOWLIST / RESPONSE_WEB_* without recreating the container.
 # A broken file turns every block switch off (config/response_overrides.py).
 from . import response_overrides  # noqa: E402
