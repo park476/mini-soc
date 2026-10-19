@@ -64,6 +64,49 @@ function Briefing({ incident }) {
   );
 }
 
+// Mirrors backend events/correlation.py RULE_SCORES and risk_level(): a lone Alert's rule score, no correlation bonus.
+const RULE_SCORE = { ssh_brute_force: 40, nginx_scan: 30, nginx_suspicious_path: 20 };
+const levelOf = (score) => (score >= 70 ? 'High' : score >= 40 ? 'Medium' : 'Low');
+
+// Latest detected attack. It is an Alert, not an Incident: no Incident exists for it.
+function LatestAlert({ alert, incident }) {
+  const score = RULE_SCORE[alert.rule_type];
+  const level = score === undefined ? null : levelOf(score);
+  return (
+    <article className="briefing">
+      <div className="briefing-id">
+        <div>
+          <span className="kicker">현재 보안 상태 · 최근 공격 탐지 · 경보 #{alert.id}</span>
+          <h1 className="briefing-ip mono">{alert.source_ip}</h1>
+          <p className="briefing-meta">
+            탐지 시각 <span className="mono">{formatTime(alert.occurred_at)}</span>
+            <span className="dot-sep">·</span>{ruleLabel(alert.rule_type)}
+            <span className="dot-sep">·</span>{RULES[alert.rule_type]?.source} 로그
+          </p>
+        </div>
+        {level && (
+          <div className={`verdict verdict-${level.toLowerCase()}`}>
+            <span className="verdict-score">{score}</span>
+            <span className="verdict-level">{level.toUpperCase()}</span>
+            <span className="verdict-caption">규칙 점수 / 100</span>
+          </div>
+        )}
+      </div>
+      {alert.evidence && <p className="briefing-meta mono">{alert.evidence}</p>}
+      <p className="briefing-why">
+        <span className="why-label">보안 사고 아님</span>
+        <span className="why-term">단일 경보 · 상관분석 미성립 (사고는 상관분석 성립 + 위험도 70 이상일 때만 생성)</span>
+        <a className="link-strong" href={`#/alerts/${alert.id}`}>경보 상세 →</a>
+        {incident && (
+          <a className="link-strong" href={`#/incidents/${incident.id}`}>
+            최근 보안 사고 INCIDENT {String(incident.id).padStart(2, '0')} ({incident.source_ip}, {incident.risk_score}) →
+          </a>
+        )}
+      </p>
+    </article>
+  );
+}
+
 // Colour for the latest stored response: success only when its effect verification succeeded.
 function responseTone(record) {
   if (!record) return '';
@@ -151,22 +194,27 @@ function CollectionPath({ state }) {
 }
 
 export default function Dashboard() {
-  const dashboard = useApi('/api/dashboard/');
+  const dashboard = useApi('/api/dashboard/', 5000);
   const incident = dashboard.data?.recent_incidents?.[0];
+  const alert = dashboard.data?.recent_alerts?.[0];
+  // Top shows whichever is newer: the latest Incident, or a later Alert that formed no Incident.
+  const alertIsNewer = alert && (!incident || new Date(alert.occurred_at) > new Date(incident.occurred_at));
 
   return (
     <div className="dashboard">
       <section className="band">
         <div className="band-inner dash-top">
-          <Status state={part(dashboard, 'recent_incidents')} empty={(
-            <div className="briefing briefing-none">
-              <span className="kicker">현재 보안 상태</span>
-              <p className="none-title">현재 보안 사고 없음</p>
-              <p className="note">보안 사고는 상관분석 성립 + 위험도 70 이상일 때만 생성됩니다.</p>
-            </div>
-          )}>
-            {incident && <Briefing incident={incident} />}
-          </Status>
+          {alertIsNewer ? <LatestAlert alert={alert} incident={incident} /> : (
+            <Status state={part(dashboard, 'recent_incidents')} empty={(
+              <div className="briefing briefing-none">
+                <span className="kicker">현재 보안 상태</span>
+                <p className="none-title">현재 보안 사고 없음</p>
+                <p className="note">보안 사고는 상관분석 성립 + 위험도 70 이상일 때만 생성됩니다.</p>
+              </div>
+            )}>
+              {incident && <Briefing incident={incident} />}
+            </Status>
+          )}
           <Track state={dashboard} />
         </div>
       </section>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
-export function useApi(url) {
+// pollMs (optional): refetch on that interval and keep showing the last data while it reloads.
+export function useApi(url, pollMs) {
   const [attempt, setAttempt] = useState(0);
   const [result, setResult] = useState({ key: null, error: '', data: null });
   const key = url ? `${url}#${attempt}` : null;
@@ -23,11 +24,17 @@ export function useApi(url) {
   }, [url, attempt]);
 
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
+  useEffect(() => {
+    if (!url || !pollMs) return undefined;
+    const timer = setInterval(reload, pollMs);
+    return () => clearInterval(timer);
+  }, [url, pollMs, reload]);
   const current = result.key === key;
+  const stale = Boolean(pollMs) && !current && result.data !== null && result.key?.startsWith(`${url}#`);
   return {
-    loading: Boolean(url) && !current,
+    loading: Boolean(url) && !current && !stale,
     error: current ? result.error : '',
-    data: current ? result.data : null,
+    data: current || stale ? result.data : null,
     reload,
   };
 }
